@@ -1,0 +1,58 @@
+# config/backtest/ensemble_valuation.yaml
+# TWSE Ensemble Valuation System — Backtest Configuration
+
+broker:
+  cash: 1000000
+  commission: 0.001425        # TWSE standard brokerage rate
+
+data:
+  market: "tw_stock"
+  ticker: "2330.TW"           # Yahoo Finance format (append .TW for TWSE)
+  # Point-in-time cutoff — NO data after this date used during training/inference
+  start_date: "2019-01-01"
+  end_date: "2024-01-18"      # AS AT DATE
+
+strategy:
+  class: "EnsembleValuationStrategy"
+  params:
+    as_at_date: "2024-01-18"
+    target_horizon_days: 20
+    radius_optimal: 15.0      # legacy param; system uses KNN with n_neighbors below
+    n_neighbors: 10           # KNN neighbors (robust alternative to radius search)
+    xgb_weight: 0.6           # XGBoost weight in ensemble (KNN gets 0.4)
+    buy_threshold: 0.05       # minimum predicted upside to trigger a buy (5%)
+
+model:
+  xgboost:
+    n_estimators: 200
+    learning_rate: 0.03
+    max_depth: 4
+    subsample: 0.8
+    colsample_bytree: 0.8
+  validation:
+    method: "purged_walk_forward"
+    n_splits: 5
+    embargo_days: 5           # bars purged between train tail and val head
+
+features:
+  # All features are computed from price/volume only (no lookahead)
+  - ret_5d
+  - ret_20d
+  - ret_60d
+  - ma5_ratio
+  - ma20_ratio
+  - ma60_ratio
+  - vol_20d
+  - vol_60d
+  - vol_ratio
+  - rsi14
+  - bb_pos
+
+data_sources:
+  primary: "yfinance"          # free, no token required
+  fallback: "synthetic"        # high-fidelity GBM with real price anchors
+  finmind_api: "https://api.finmindtrade.com/api/v4/data"  # requires token
+
+output:
+  report_chart: "twse_valuation_report.png"
+  log_level: "INFO"
