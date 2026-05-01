@@ -754,18 +754,27 @@ async function runVal(){
   const userP=`代碼：${ticker}，基準日：${asAt}，真實收盤：${pitPrice} TWD，預測區間：T+${h}，訓練：${y}年，XGBoost${Math.round(xw*100)}% KNN${Math.round((1-xw)*100)}%，門檻：${thr}%，驗證：${doV}`;
 
   try{
-    const r=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+    // Try primary model, fall back to faster model on rate-limit (429)
+    const MODELS=['llama-3.3-70b-versatile','llama3-8b-8192'];
+    let r, lastErr;
+    for(const model of MODELS){
+      r=await fetch('https://api.groq.com/openai/v1/chat/completions',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':`Bearer ${apiKey}`},
       body:JSON.stringify({
-        model:'llama-3.3-70b-versatile',
+        model:model,
         temperature:0.1,
         max_tokens:1200,
         response_format:{type:'json_object'},
         messages:[{role:'system',content:sysP},{role:'user',content:userP}]
       })
-    });
-    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e?.error?.message||`Groq API 錯誤 ${r.status}`)}
+      });
+      if(r.status===429){log(`${model} 達到限流，嘗試備用模型…`,'err');continue;}
+      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e?.error?.message||`Groq API 錯誤 ${r.status}`);}
+      log(`使用模型：${model}`,'ok');
+      break;
+    }
+    if(!r||!r.ok){throw new Error('所有 Groq 模型均失敗，請檢查 API 金鑰');}
     const d=await r.json();
     const raw=(d.choices?.[0]?.message?.content||'').replace(/```json|```/g,'').trim();
     if(!raw) throw new Error('Groq 回傳空白');
