@@ -1,17 +1,21 @@
 """
-app.py  —  TWSE Ensemble Valuation System
-Streamlit dashboard — redesigned per DESIGN-claude.md
-  · Cream canvas / coral CTA / dark navy surfaces
-  · Screener table with click-to-analyse panel (Step 3)
-  · CSV batch upload for ticker lists
-  · Individual ticker search
-Run with:  streamlit run app.py
+app.py  —  TWSE Ensemble Valuation System  (fixed & upgraded)
+Streamlit dashboard. Run with:  streamlit run app.py
+
+Fixes vs original:
+  1. As At Date now defaults to TODAY (not hardcoded 2024-01-18)
+  2. current_price correctly uses the last close on/before as_at_date
+  3. xgb_weight / n_neighbors sliders are now wired into train_ensemble & predict
+  4. Stock list screening mode: run model on a watchlist, rank by expected return
+  5. Ticker detail drill-down after screening
+  6. load_data end-date includes as_at_date by fetching +1 day (yfinance excludes end)
+  7. Deprecated .last("365D") replaced with tail(252)
+  8. Validation only shown when as_at_date is sufficiently in the past
 """
 
 import warnings
 warnings.filterwarnings("ignore")
 
-import io
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -30,224 +34,125 @@ from sklearn.metrics import mean_squared_error
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="TWSE Ensemble Valuation",
-    page_icon="◈",
+    page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
-# ── CSS overrides (aggressive specificity to beat Streamlit defaults) ──────────
+# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
 
-*, *::before, *::after { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
-
-.stApp,
-.stApp > div,
-[data-testid="stAppViewContainer"],
-[data-testid="stAppViewBlockContainer"],
-[data-testid="block-container"],
-.main, .main > div,
-section.main,
-section.main > div {
-    background-color: #faf9f5 !important;
-    color: #141413 !important;
-    font-family: 'Inter', sans-serif !important;
+html, body, [class*="css"] {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background-color: #0b0e1a;
+    color: #e0e6f0;
 }
+.stApp { background-color: #0b0e1a; }
+h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
 
-[data-testid="block-container"],
-.block-container {
-    padding: 0 !important;
-    margin: 0 !important;
-    max-width: 100% !important;
-    width: 100% !important;
+.metric-card {
+    background: linear-gradient(135deg, #111827 0%, #1a2035 100%);
+    border: 1px solid #1e3a5f;
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin-bottom: 10px;
 }
+.metric-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    color: #6b7db3;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 4px;
+}
+.metric-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: #e0e6f0;
+}
+.metric-value.up   { color: #34d399; }
+.metric-value.down { color: #f87171; }
+.metric-value.neu  { color: #60a5fa; }
 
-#MainMenu, footer, header,
-[data-testid="stToolbar"],
-[data-testid="stDecoration"],
-[data-testid="stStatusWidget"],
-.stDeployButton { display: none !important; visibility: hidden !important; }
+.tag-success {
+    background: #064e3b; color: #34d399;
+    border-radius: 4px; padding: 3px 10px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem;
+}
+.tag-warn {
+    background: #451a03; color: #fb923c;
+    border-radius: 4px; padding: 3px 10px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem;
+}
+.tag-buy  { background:#064e3b; color:#34d399; border-radius:4px; padding:3px 10px;
+            font-family:'IBM Plex Mono',monospace; font-size:0.75rem; }
+.tag-sell { background:#4c0519; color:#f87171; border-radius:4px; padding:3px 10px;
+            font-family:'IBM Plex Mono',monospace; font-size:0.75rem; }
+.tag-hold { background:#1c1917; color:#a8a29e; border-radius:4px; padding:3px 10px;
+            font-family:'IBM Plex Mono',monospace; font-size:0.75rem; }
 
-[data-testid="stSidebar"] {
-    background: #f5f0e8 !important;
-    border-right: 1px solid #e6dfd8 !important;
+.section-header {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    color: #3b82f6;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    border-bottom: 1px solid #1e3a5f;
+    padding-bottom: 6px;
+    margin: 24px 0 16px 0;
 }
-[data-testid="stSidebar"] * { color: #141413 !important; font-family: 'Inter', sans-serif !important; }
-
-.stButton > button,
-.stButton > button:focus,
-.stButton > button:active {
-    background: #cc785c !important;
-    color: #ffffff !important;
-    border: none !important;
-    border-radius: 8px !important;
-    font-family: 'Inter', sans-serif !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    padding: 9px 18px !important;
-    width: auto !important;
-    min-width: 0 !important;
-    box-shadow: none !important;
-    letter-spacing: 0 !important;
-    line-height: 1.4 !important;
+.pit-badge {
+    background: #1e1b4b; color: #818cf8;
+    border: 1px solid #3730a3;
+    border-radius: 4px; padding: 2px 8px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.7rem;
 }
-.stButton > button:hover { background: #a9583e !important; }
-
-.stDownloadButton > button {
-    background: #faf9f5 !important;
-    color: #cc785c !important;
-    border: 1px solid #e6dfd8 !important;
-    border-radius: 8px !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    padding: 9px 18px !important;
+div[data-testid="stSidebar"] {
+    background-color: #0d1120;
+    border-right: 1px solid #1e3a5f;
 }
-
-.stTextInput > div > div > input {
-    background: #faf9f5 !important;
-    border: 1px solid #e6dfd8 !important;
-    border-radius: 8px !important;
-    color: #141413 !important;
-    font-family: 'Inter', sans-serif !important;
-    font-size: 13px !important;
+.stButton > button {
+    background: linear-gradient(135deg, #1d4ed8, #2563eb);
+    color: white; border: none; border-radius: 6px;
+    font-family: 'IBM Plex Mono', monospace; font-weight: 600;
+    padding: 10px 28px; width: 100%; letter-spacing: 0.05em;
 }
-.stTextInput > div > div > input:focus {
-    border-color: #cc785c !important;
-    box-shadow: 0 0 0 3px rgba(204,120,92,0.15) !important;
+.stButton > button:hover {
+    background: linear-gradient(135deg, #2563eb, #3b82f6); border: none;
 }
-.stTextInput label, .stDateInput label, [data-testid="stSlider"] label,
-.stCheckbox label, [data-testid="stFileUploader"] label {
-    color: #6c6a64 !important;
-    font-size: 12px !important;
-    font-weight: 500 !important;
-    font-family: 'Inter', sans-serif !important;
+.stock-row {
+    background: #111827;
+    border: 1px solid #1e3a5f;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s;
 }
-
-.stDateInput > div > div > input {
-    background: #faf9f5 !important;
-    border: 1px solid #e6dfd8 !important;
-    border-radius: 8px !important;
-    color: #141413 !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 13px !important;
-}
-
-[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"] {
-    background: #cc785c !important;
-    border-color: #cc785c !important;
-}
-
-.stProgress > div > div > div > div { background: #cc785c !important; }
-.stProgress > div > div > div { background: #e6dfd8 !important; border-radius: 9999px !important; }
-
-[data-testid="stFileUploader"] section {
-    background: #f5f0e8 !important;
-    border: 1.5px dashed #e8e0d2 !important;
-    border-radius: 10px !important;
-}
-
-.stTabs [data-baseweb="tab-list"] {
-    background: transparent !important;
-    border-bottom: 1px solid #e6dfd8 !important;
-    gap: 4px !important;
-    padding: 0 32px !important;
-}
-.stTabs [data-baseweb="tab"] {
-    background: transparent !important;
-    border-radius: 8px 8px 0 0 !important;
-    color: #6c6a64 !important;
-    font-family: 'Inter', sans-serif !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    border: 1px solid transparent !important;
-    border-bottom: none !important;
-    padding: 8px 16px !important;
-}
-.stTabs [aria-selected="true"] {
-    background: #efe9de !important;
-    color: #141413 !important;
-    border-color: #e6dfd8 !important;
-    border-bottom-color: #efe9de !important;
-}
-.stTabs [data-baseweb="tab-panel"] { padding: 0 !important; background: #faf9f5 !important; }
-.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
-
-.stSuccess { background: #eaf3de !important; color: #3d3d3a !important; border-radius: 8px !important; }
-.stInfo    { background: #f5f0e8 !important; color: #3d3d3a !important; border-radius: 8px !important; }
-.stWarning { background: #fef3e2 !important; color: #3d3d3a !important; border-radius: 8px !important; }
-.stError   { background: #fdecea !important; color: #3d3d3a !important; border-radius: 8px !important; }
-
-.stCaption { color: #8e8b82 !important; font-size: 12px !important; }
-
-/* ── Custom classes ── */
-.d-nav {
-    background: #faf9f5;
-    border-bottom: 1px solid #e6dfd8;
-    padding: 0 32px;
-    height: 60px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-}
-.d-wordmark { font-family: 'EB Garamond', serif; font-size: 18px; color: #141413; display: flex; align-items: center; gap: 8px; }
-.pit-pill { background:#efe9de;color:#6c6a64;font-size:10px;font-weight:500;letter-spacing:1px;text-transform:uppercase;padding:3px 10px;border-radius:9999px;border:1px solid #e6dfd8;display:inline-block; }
-.d-summary-bar { background:#181715;padding:16px 32px;display:flex;align-items:center;gap:0;flex-wrap:wrap; }
-.d-sum-item { display:flex;flex-direction:column; }
-.d-sum-label { font-size:10px;font-weight:500;letter-spacing:1.2px;text-transform:uppercase;color:#a09d96;margin-bottom:3px; }
-.d-sum-value { font-family:'JetBrains Mono',monospace;font-size:18px;color:#faf9f5; }
-.d-sum-value.buy { color:#5db872; }
-.d-sum-value.hold { color:#e8a55a; }
-.d-sum-value.sell { color:#c64545; }
-.d-sum-value.ret { color:#5db872; }
-.d-sum-div { width:1px;height:32px;background:#2d2c28;margin:0 20px;flex-shrink:0; }
-.d-input-band { background:#faf9f5;padding:16px 32px;border-bottom:1px solid #e6dfd8;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap; }
-.d-btn-row { padding:12px 32px;display:flex;align-items:center;gap:10px;background:#faf9f5;border-bottom:1px solid #e6dfd8; }
-.d-section-pad { padding:0 32px; }
-.d-kpi-card { background:#efe9de;border-radius:10px;padding:14px 16px;margin-bottom:8px; }
-.d-kpi-label { font-size:10px;font-weight:500;letter-spacing:1px;text-transform:uppercase;color:#6c6a64;margin-bottom:5px; }
-.d-kpi-value { font-family:'EB Garamond',serif;font-size:22px;color:#141413;letter-spacing:-0.3px;line-height:1; }
-.d-kpi-value.up { color:#4a9e5c; }
-.d-kpi-value.down { color:#c64545; }
-.d-kpi-value.coral { color:#cc785c; }
-.d-kpi-sub { font-size:11px;color:#6c6a64;margin-top:3px; }
-.d-section-label { font-size:10px;font-weight:500;letter-spacing:1.2px;text-transform:uppercase;color:#6c6a64;margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid #e6dfd8; }
-.d-dark-card { background:#181715;border-radius:10px;padding:16px;color:#faf9f5;margin-bottom:10px; }
-.d-model-item { display:flex;flex-direction:column;gap:4px;margin-bottom:8px; }
-.d-model-meta { display:flex;justify-content:space-between;align-items:baseline; }
-.d-model-name { font-size:11px;font-weight:500;color:#a09d96; }
-.d-model-price { font-family:'JetBrains Mono',monospace;font-size:12px;color:#faf9f5; }
-.d-bar-track { height:5px;background:#252320;border-radius:9999px;overflow:hidden; }
-.d-bar-fill { height:100%;border-radius:9999px; }
-.d-val-card { background:#faf9f5;border:1px solid #e6dfd8;border-radius:8px;padding:10px 14px;flex:1;min-width:100px; }
-.d-val-label { font-size:10px;color:#6c6a64;margin-bottom:3px; }
-.d-val-value { font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:500;color:#141413; }
-.d-val-value.success { color:#4a9e5c; }
-.d-val-value.error { color:#c64545; }
-.d-fold-card { background:#efe9de;border-radius:6px;padding:8px;text-align:center; }
-.d-fold-label { font-size:10px;color:#6c6a64;margin-bottom:2px; }
-.d-fold-val { font-family:'JetBrains Mono',monospace;font-size:12px;color:#141413; }
-.d-signal-buy  { display:inline-flex;align-items:center;gap:5px;background:#eaf3de;color:#4a9e5c;font-size:11px;font-weight:500;padding:4px 10px;border-radius:9999px; }
-.d-signal-hold { display:inline-flex;align-items:center;gap:5px;background:#fef3e2;color:#a06b00;font-size:11px;font-weight:500;padding:4px 10px;border-radius:9999px; }
-.d-signal-sell { display:inline-flex;align-items:center;gap:5px;background:#fdecea;color:#c64545;font-size:11px;font-weight:500;padding:4px 10px;border-radius:9999px; }
-.d-badge-semi { display:inline-block;background:#252320;color:#5db8a6;font-size:10px;font-weight:500;padding:2px 8px;border-radius:9999px; }
-.d-badge-elec { display:inline-block;background:#1a2a1a;color:#7bc98a;font-size:10px;font-weight:500;padding:2px 8px;border-radius:9999px; }
-.d-coral-cta { background:#cc785c;border-radius:12px;padding:28px 32px;display:flex;align-items:center;justify-content:space-between;margin:20px 0 0; }
-.d-coral-cta h2 { font-family:'EB Garamond',serif !important;font-size:24px !important;font-weight:400 !important;color:#ffffff !important;letter-spacing:-0.4px !important;margin:0 0 4px !important; }
-.d-coral-cta p { font-size:13px;color:rgba(255,255,255,0.75);margin:0; }
-.d-footer { background:#181715;padding:28px 32px;margin-top:40px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px; }
-.d-footer-brand { font-family:'EB Garamond',serif;font-size:16px;color:#faf9f5; }
-.d-footer-text { font-size:12px;color:#a09d96;margin-top:4px; }
-.d-panel { border-left:1px solid #e6dfd8;background:#faf9f5;padding:16px;min-height:500px; }
-.d-panel-empty { display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:400px;text-align:center;padding:32px 16px; }
-.d-panel-empty-title { font-family:'EB Garamond',serif;font-size:20px;color:#141413;margin:12px 0 6px; }
-.d-panel-empty-sub { font-size:12px;color:#6c6a64;line-height:1.6; }
+.stock-row:hover { border-color: #3b82f6; }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DEFAULT WATCHLIST
+# ══════════════════════════════════════════════════════════════════════════════
+
+DEFAULT_WATCHLIST = [
+    ("2330", "台積電",   "半導體"),
+    ("2317", "鴻海",     "電子"),
+    ("2454", "聯發科",   "半導體"),
+    ("2412", "中華電",   "電信"),
+    ("2308", "台達電",   "電子"),
+    ("2382", "廣達",     "電子"),
+    ("3711", "日月光",   "半導體"),
+    ("2357", "華碩",     "電子"),
+    ("2303", "聯電",     "半導體"),
+    ("0050", "元大台灣50","ETF"),
+]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -260,6 +165,7 @@ FEATURE_COLS = [
     "vol_20d", "vol_60d", "vol_ratio",
     "rsi14", "bb_pos",
 ]
+
 
 def compute_features(price_df: pd.DataFrame) -> pd.DataFrame:
     df = price_df.copy().sort_index()
@@ -287,26 +193,41 @@ def compute_features(price_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)
 def load_data(ticker: str, start: str, end: str) -> pd.DataFrame:
-    try:
-        raw = yf.download(ticker, start=start, end=end,
-                          progress=False, auto_adjust=True)
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw.columns = raw.columns.get_level_values(0)
-        if not raw.empty:
-            return raw
-    except Exception:
-        pass
-    raise ValueError(f"No data returned for {ticker}")
+    """
+    Download OHLCV.  end is INCLUSIVE — we add 1 calendar day because
+    yfinance excludes the end date.
+    """
+    end_excl = (pd.to_datetime(end) + timedelta(days=1)).strftime("%Y-%m-%d")
+    raw = yf.download(ticker, start=start, end=end_excl,
+                      progress=False, auto_adjust=True)
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    if raw.empty:
+        raise ValueError(f"No data returned for {ticker}")
+    return raw
+
+
+def get_price_at(raw: pd.DataFrame, as_at_dt: pd.Timestamp) -> float:
+    """Return the last available Close on or before as_at_date."""
+    pit = raw[raw.index <= as_at_dt]
+    if pit.empty:
+        raise ValueError("No price data on or before the As At Date.")
+    return float(pit["Close"].iloc[-1])
 
 
 def train_ensemble(feat_df: pd.DataFrame, n_splits: int = 5,
-                   xgb_w: float = 0.6, n_neighbors: int = 10):
+                   xgb_weight: float = 0.6, n_neighbors: int = 10):
+    """
+    Purged walk-forward cross-validation training.
+    Returns fitted models + fold RMSE list.
+    """
     data = feat_df[FEATURE_COLS + ["fwd_ret_20d"]].dropna()
-    if len(data) < 60:
-        raise ValueError(f"Insufficient data: {len(data)} rows (need ≥60)")
     X, y = data[FEATURE_COLS], data["fwd_ret_20d"]
+
+    if len(X) < 60:
+        raise ValueError(f"Insufficient training data: {len(X)} rows (need ≥60)")
 
     xgb = XGBRegressor(n_estimators=200, learning_rate=0.03,
                        max_depth=4, subsample=0.8,
@@ -316,31 +237,39 @@ def train_ensemble(feat_df: pd.DataFrame, n_splits: int = 5,
 
     tscv = TimeSeriesSplit(n_splits=n_splits)
     fold_rmse = []
+    knn_w = 1.0 - xgb_weight
+
     for train_idx, val_idx in tscv.split(X):
-        Xtr = X.iloc[train_idx[:-5]] if len(train_idx) > 5 else X.iloc[train_idx]
-        ytr = y.iloc[train_idx[:-5]] if len(train_idx) > 5 else y.iloc[train_idx]
-        Xva, yva = X.iloc[val_idx], y.iloc[val_idx]
+        # Purge: drop last 5 bars of train to avoid label overlap with val
+        purge_end = max(0, len(train_idx) - 5)
+        Xtr = X.iloc[train_idx[:purge_end]]
+        ytr = y.iloc[train_idx[:purge_end]]
+        Xva = X.iloc[val_idx]
+        yva = y.iloc[val_idx]
         if len(Xtr) < 10:
             continue
         sc = StandardScaler().fit(Xtr)
         xgb.fit(sc.transform(Xtr), ytr)
         knn.fit(sc.transform(Xtr), ytr)
-        preds = xgb_w * xgb.predict(sc.transform(Xva)) + \
-                (1 - xgb_w) * knn.predict(sc.transform(Xva))
+        preds = (xgb_weight * xgb.predict(sc.transform(Xva)) +
+                 knn_w * knn.predict(sc.transform(Xva)))
         fold_rmse.append(float(np.sqrt(mean_squared_error(yva, preds))))
 
+    # Final fit on all data
     Xs = scaler.fit_transform(X)
     xgb.fit(Xs, y)
     knn.fit(Xs, y)
     return xgb, knn, scaler, fold_rmse
 
 
-def predict(xgb, knn, scaler, current_price, feature_row, xgb_w=0.6):
+def predict(xgb, knn, scaler, current_price, feature_row,
+            xgb_weight: float = 0.6):
+    knn_w = 1.0 - xgb_weight
     X = feature_row[FEATURE_COLS].values.reshape(1, -1)
     Xs = scaler.transform(X)
     xgb_ret = float(xgb.predict(Xs)[0])
-    knn_ret  = float(knn.predict(Xs)[0])
-    ens_ret  = xgb_w * xgb_ret + (1 - xgb_w) * knn_ret
+    knn_ret = float(knn.predict(Xs)[0])
+    ens_ret = xgb_weight * xgb_ret + knn_w * knn_ret
     return {
         "xgb_price":   round(current_price * (1 + xgb_ret), 2),
         "knn_price":   round(current_price * (1 + knn_ret), 2),
@@ -351,813 +280,568 @@ def predict(xgb, knn, scaler, current_price, feature_row, xgb_w=0.6):
     }
 
 
-def run_single_analysis(ticker: str, as_at_date, horizon: int,
-                        train_years: int, xgb_w: float, n_neighbors: int,
-                        buy_threshold: float, validate: bool):
-    """Run full pipeline for one ticker. Returns dict with all results."""
-    as_at_dt  = pd.to_datetime(as_at_date)
-    train_start = (as_at_dt - pd.DateOffset(years=train_years)).strftime("%Y-%m-%d")
-    as_at_str   = as_at_dt.strftime("%Y-%m-%d")
-    future_end  = (as_at_dt + timedelta(days=horizon * 3)).strftime("%Y-%m-%d")
+def run_valuation_for_ticker(ticker_tw: str, as_at_dt: pd.Timestamp,
+                              train_start: str, xgb_weight: float,
+                              n_neighbors: int) -> dict:
+    """
+    Full pipeline for one ticker. Returns dict with price + prediction,
+    or {"error": ...} on failure.
+    """
+    try:
+        raw = load_data(ticker_tw, train_start,
+                        as_at_dt.strftime("%Y-%m-%d"))
+        if raw.empty or len(raw) < 80:
+            return {"error": "Insufficient data"}
 
-    # Normalise ticker
-    ticker_yf = ticker if ticker.endswith(".TW") else f"{ticker}.TW"
+        current_price = get_price_at(raw, as_at_dt)
+        feat_df = compute_features(raw)
+        train_feat = feat_df[feat_df.index <= as_at_dt]
 
-    train_raw = load_data(ticker_yf, train_start, as_at_str)
-    if train_raw.empty or len(train_raw) < 100:
-        raise ValueError(f"Insufficient data for {ticker_yf}")
+        xgb_m, knn_m, scaler, fold_rmse = train_ensemble(
+            train_feat, xgb_weight=xgb_weight, n_neighbors=n_neighbors)
 
-    feat_df    = compute_features(train_raw)
-    train_feat = feat_df[feat_df.index <= as_at_dt]
-
-    xgb_m, knn_m, scaler, fold_rmse = train_ensemble(
-        train_feat, xgb_w=xgb_w, n_neighbors=n_neighbors
-    )
-
-    last_row      = train_feat[FEATURE_COLS].dropna().iloc[-1]
-    current_price = float(train_raw["Close"].iloc[-1])
-    pred          = predict(xgb_m, knn_m, scaler, current_price, last_row, xgb_w)
-
-    # Determine signal
-    ret = pred["ens_ret_pct"]
-    if ret > buy_threshold:
-        signal = "買入"
-    elif ret < -buy_threshold:
-        signal = "賣出"
-    else:
-        signal = "持有"
-
-    actual_price = None
-    if validate:
-        try:
-            future_raw   = load_data(ticker_yf, as_at_str, future_end)
-            future_cl    = future_raw["Close"].iloc[1:]
-            if len(future_cl) >= horizon:
-                actual_price = float(future_cl.iloc[horizon - 1])
-            elif len(future_cl) > 0:
-                actual_price = float(future_cl.iloc[-1])
-        except Exception:
-            actual_price = None
-
-    return {
-        "ticker":        ticker_yf,
-        "current_price": current_price,
-        "pred":          pred,
-        "fold_rmse":     fold_rmse,
-        "cv_rmse_avg":   float(np.mean(fold_rmse)) if fold_rmse else None,
-        "signal":        signal,
-        "actual_price":  actual_price,
-        "train_start":   train_start,
-        "as_at_str":     as_at_str,
-    }
+        last_row = train_feat[FEATURE_COLS].dropna().iloc[-1]
+        pred = predict(xgb_m, knn_m, scaler, current_price, last_row,
+                       xgb_weight=xgb_weight)
+        pred["current_price"] = current_price
+        pred["cv_rmse"] = round(float(np.mean(fold_rmse)), 5) if fold_rmse else None
+        pred["fold_rmse"] = fold_rmse
+        pred["raw"] = raw
+        pred["feat_df"] = feat_df
+        pred["train_feat"] = train_feat
+        return pred
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CHART (DESIGN.md palette: cream bg / coral / teal / amber)
+#  CHART
 # ══════════════════════════════════════════════════════════════════════════════
 
 def make_chart(feat_df, pred, as_at_dt, horizon, actual_price=None):
-    CANVAS = "#faf9f5"
-    CARD   = "#efe9de"
-    DARK   = "#181715"
-    CORAL  = "#cc785c"
-    TEAL   = "#5db8a6"
-    AMBER  = "#e8a55a"
-    RED    = "#c64545"
-    INK    = "#3d3d3a"
-    MUTED  = "#8e8b82"
-    HAIR   = "#e6dfd8"
+    fig = plt.figure(figsize=(14, 9), facecolor="#0b0e1a")
+    gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.5, wspace=0.35)
 
-    fig = plt.figure(figsize=(14, 9), facecolor=CANVAS)
-    gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.52, wspace=0.38)
+    BG, BLUE, GRN  = "#111827", "#60a5fa", "#34d399"
+    RED, ORG, PUR  = "#f87171", "#fb923c", "#a78bfa"
+    SPINE = "#1e3a5f"
 
-    def style(ax, dark=False):
-        bg = DARK if dark else CARD
-        ax.set_facecolor(bg)
-        spine_c = "#2d2c28" if dark else HAIR
+    def style(ax):
+        ax.set_facecolor(BG)
         for sp in ax.spines.values():
-            sp.set_color(spine_c)
-        tick_c = "#a09d96" if dark else MUTED
-        ax.tick_params(colors=tick_c, labelsize=7)
-        ax.xaxis.label.set_color(tick_c)
-        ax.yaxis.label.set_color(tick_c)
+            sp.set_color(SPINE)
+        ax.tick_params(colors="#4b5e7e", labelsize=7)
+        ax.xaxis.label.set_color("#4b5e7e")
+        ax.yaxis.label.set_color("#4b5e7e")
 
-    hist = feat_df.dropna(subset=["Close"]).last("365D")
+    # Use last 365 calendar days of data (tail(252) ≈ 1 trading year)
+    hist = feat_df.dropna(subset=["Close"]).tail(252)
 
-    # 1. Price + prediction
+    # ── 1. Price + prediction ──────────────────────────────────────────────
     ax1 = fig.add_subplot(gs[0, :])
-    style(ax1, dark=True)
-    ax1.plot(hist.index, hist["Close"], color=TEAL, lw=1.3, label="Close")
-    ax1.fill_between(hist.index, hist["Low"].rolling(5).min(),
+    style(ax1)
+    ax1.plot(hist.index, hist["Close"], color=BLUE, lw=1.2, label="Close")
+    ax1.fill_between(hist.index,
+                     hist["Low"].rolling(5).min(),
                      hist["High"].rolling(5).max(),
-                     alpha=0.06, color=TEAL)
-    ax1.axvline(as_at_dt, color=CORAL, lw=1.5, ls="--", label="As At Date")
+                     alpha=0.08, color=BLUE)
+    ax1.axvline(as_at_dt, color=ORG, lw=1.5, ls="--", label="As At Date")
 
     t20_approx = as_at_dt + timedelta(days=int(horizon * 1.4))
-    current_p  = float(hist["Close"].iloc[-1])
+    current_p  = pred["current_price"]
     ax1.annotate("", xy=(t20_approx, pred["ens_price"]),
                  xytext=(as_at_dt, current_p),
-                 arrowprops=dict(arrowstyle="->", color="#4a9e5c", lw=1.5))
+                 arrowprops=dict(arrowstyle="->", color=GRN, lw=1.5))
     ax1.scatter([t20_approx], [pred["ens_price"]],
-                color="#4a9e5c", zorder=6, s=60,
-                label=f"Ensemble T+{horizon}: {pred['ens_price']:,.0f}")
+                color=GRN, zorder=6, s=60,
+                label=f"Ensemble T+{horizon}: {pred['ens_price']:.0f}")
     if actual_price:
         ax1.scatter([t20_approx], [actual_price],
                     color=RED, zorder=6, s=60, marker="x",
-                    label=f"Actual T+{horizon}: {actual_price:,.0f}")
+                    label=f"Actual T+{horizon}: {actual_price:.0f}")
     ax1.set_title(f"Price History & T+{horizon} Ensemble Forecast",
-                  color="#faf9f5", fontsize=10, pad=8)
-    ax1.legend(fontsize=7, facecolor=DARK, labelcolor="#faf9f5",
-               edgecolor="#2d2c28", framealpha=0.95)
+                  color="white", fontsize=10, fontfamily="monospace", pad=8)
+    ax1.legend(fontsize=7, facecolor=BG, labelcolor="white",
+               edgecolor=SPINE, framealpha=0.9)
 
-    # 2. RSI
+    # ── 2. RSI ────────────────────────────────────────────────────────────
     ax2 = fig.add_subplot(gs[1, 0])
-    style(ax2, dark=True)
-    rsi = hist["rsi14"].dropna().last("180D")
-    ax2.plot(rsi.index, rsi, color="#a78bfa", lw=1)
+    style(ax2)
+    rsi = hist["rsi14"].dropna().tail(120)
+    ax2.plot(rsi.index, rsi, color=PUR, lw=1)
     ax2.axhline(70, color=RED, lw=0.8, ls="--", alpha=0.6)
-    ax2.axhline(30, color="#4a9e5c", lw=0.8, ls="--", alpha=0.6)
-    ax2.fill_between(rsi.index, 30, rsi, where=rsi < 30, alpha=0.2, color="#4a9e5c")
+    ax2.axhline(30, color=GRN, lw=0.8, ls="--", alpha=0.6)
+    ax2.fill_between(rsi.index, 30, rsi, where=rsi < 30, alpha=0.2, color=GRN)
     ax2.fill_between(rsi.index, 70, rsi, where=rsi > 70, alpha=0.2, color=RED)
-    ax2.axvline(as_at_dt, color=CORAL, lw=1, ls="--")
+    ax2.axvline(as_at_dt, color=ORG, lw=1, ls="--")
     ax2.set_ylim(0, 100)
-    ax2.set_title("RSI (14)", color="#faf9f5", fontsize=9)
+    ax2.set_title("RSI (14)", color="white", fontsize=9, fontfamily="monospace")
 
-    # 3. Volume ratio
+    # ── 3. Volume ratio ───────────────────────────────────────────────────
     ax3 = fig.add_subplot(gs[1, 1])
-    style(ax3, dark=True)
-    vr = hist["vol_ratio"].dropna().last("180D")
-    colors_vr = [TEAL if v >= 1 else "#2d2c28" for v in vr]
-    ax3.bar(vr.index, vr, color=colors_vr, alpha=0.85, width=1)
-    ax3.axhline(1.0, color="#faf9f5", lw=0.7, ls="--", alpha=0.3)
-    ax3.axvline(as_at_dt, color=CORAL, lw=1, ls="--")
-    ax3.set_title("Volume Ratio (vs 20d avg)", color="#faf9f5", fontsize=9)
+    style(ax3)
+    vr = hist["vol_ratio"].dropna().tail(120)
+    colors_vr = [GRN if v >= 1 else "#374151" for v in vr]
+    ax3.bar(vr.index, vr, color=colors_vr, alpha=0.8, width=1)
+    ax3.axhline(1.0, color="white", lw=0.7, ls="--", alpha=0.4)
+    ax3.axvline(as_at_dt, color=ORG, lw=1, ls="--")
+    ax3.set_title("Volume Ratio (vs 20d avg)", color="white",
+                  fontsize=9, fontfamily="monospace")
 
-    # 4. Bollinger Band position
+    # ── 4. BB position ────────────────────────────────────────────────────
     ax4 = fig.add_subplot(gs[1, 2])
-    style(ax4, dark=True)
-    bb = hist["bb_pos"].dropna().last("180D")
-    ax4.plot(bb.index, bb, color=TEAL, lw=1)
-    ax4.axhline(0, color="#faf9f5", lw=0.7, alpha=0.3)
-    ax4.axhline(1,  color=RED, lw=0.7, ls="--", alpha=0.5)
-    ax4.axhline(-1, color="#4a9e5c", lw=0.7, ls="--", alpha=0.5)
+    style(ax4)
+    bb = hist["bb_pos"].dropna().tail(120)
+    ax4.plot(bb.index, bb, color=BLUE, lw=1)
+    ax4.axhline(0, color="white", lw=0.7, alpha=0.4)
+    ax4.axhline(1, color=RED, lw=0.7, ls="--", alpha=0.6)
+    ax4.axhline(-1, color=GRN, lw=0.7, ls="--", alpha=0.6)
     ax4.fill_between(bb.index, 0, bb, where=bb > 0, alpha=0.15, color=RED)
-    ax4.fill_between(bb.index, 0, bb, where=bb < 0, alpha=0.15, color="#4a9e5c")
-    ax4.axvline(as_at_dt, color=CORAL, lw=1, ls="--")
-    ax4.set_title("Bollinger Band Position", color="#faf9f5", fontsize=9)
+    ax4.fill_between(bb.index, 0, bb, where=bb < 0, alpha=0.15, color=GRN)
+    ax4.axvline(as_at_dt, color=ORG, lw=1, ls="--")
+    ax4.set_title("Bollinger Band Position", color="white",
+                  fontsize=9, fontfamily="monospace")
 
-    # 5. MA ratios
+    # ── 5. MA ratios ──────────────────────────────────────────────────────
     ax5 = fig.add_subplot(gs[2, 0:2])
     style(ax5)
-    ax5.plot(hist.index, hist["ma5_ratio"],  color="#4a9e5c", lw=1, label="MA5")
-    ax5.plot(hist.index, hist["ma20_ratio"], color=TEAL,      lw=1, label="MA20")
-    ax5.plot(hist.index, hist["ma60_ratio"], color=AMBER,     lw=1, label="MA60")
-    ax5.axhline(1.0, color=INK, lw=0.7, ls="--", alpha=0.3)
-    ax5.axvline(as_at_dt, color=CORAL, lw=1, ls="--")
-    ax5.set_title("Price / MA Ratios (Momentum)", color=INK, fontsize=9)
-    ax5.legend(fontsize=7, facecolor=CARD, labelcolor=INK, edgecolor=HAIR)
+    ax5.plot(hist.index, hist["ma5_ratio"],  color=GRN,  lw=1, label="MA5")
+    ax5.plot(hist.index, hist["ma20_ratio"], color=BLUE, lw=1, label="MA20")
+    ax5.plot(hist.index, hist["ma60_ratio"], color=ORG,  lw=1, label="MA60")
+    ax5.axhline(1.0, color="white", lw=0.7, ls="--", alpha=0.3)
+    ax5.axvline(as_at_dt, color=ORG, lw=1, ls="--")
+    ax5.set_title("Price / MA Ratios (Momentum)", color="white",
+                  fontsize=9, fontfamily="monospace")
+    ax5.legend(fontsize=7, facecolor=BG, labelcolor="white", edgecolor=SPINE)
 
-    # 6. Prediction breakdown
+    # ── 6. Prediction breakdown ────────────────────────────────────────────
     ax6 = fig.add_subplot(gs[2, 2])
     style(ax6)
     labels = ["Current", "XGBoost", "KNN", "Ensemble"]
     values = [current_p, pred["xgb_price"], pred["knn_price"], pred["ens_price"]]
-    bar_colors = [TEAL, "#a78bfa", AMBER, CORAL]
+    bar_colors = [BLUE, PUR, BLUE, GRN]
     if actual_price:
         labels.append("Actual")
         values.append(actual_price)
         bar_colors.append(RED)
     bars = ax6.bar(labels, values, color=bar_colors, alpha=0.85,
-                   edgecolor=HAIR, width=0.6)
+                   edgecolor=SPINE, width=0.6)
     for bar, val in zip(bars, values):
         ax6.text(bar.get_x() + bar.get_width() / 2, val + max(values) * 0.005,
-                 f"{val:,.0f}", ha="center", va="bottom", color=INK, fontsize=7)
-    ax6.set_title("Prediction Breakdown (TWD)", color=INK, fontsize=9)
+                 f"{val:.0f}", ha="center", va="bottom",
+                 color="white", fontsize=7, fontfamily="monospace")
+    ax6.set_title("Prediction Breakdown (TWD)", color="white",
+                  fontsize=9, fontfamily="monospace")
 
     fig.suptitle(
-        f"TWSE Ensemble Valuation  ·  As At {as_at_dt.date()}  "
-        f"·  Expected: {pred['ens_ret_pct']:+.2f}%",
-        color=INK, fontsize=11, fontweight="normal", y=1.01
+        f"TWSE Ensemble Valuation  |  As At {as_at_dt.date()}  "
+        f"|  Expected: {pred['ens_ret_pct']:+.2f}%",
+        color="white", fontsize=11, fontfamily="monospace",
+        fontweight="bold", y=1.01,
     )
     plt.tight_layout()
     return fig
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  HELPERS — CSV PARSING
+#  UI HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-TICKER_COL_NAMES = {"code", "ticker", "股票代碼", "symbol", "代碼"}
+def signal_tag(ret_pct: float, threshold: float) -> str:
+    if ret_pct > threshold:
+        return '<span class="tag-buy">● BUY</span>'
+    elif ret_pct < -threshold:
+        return '<span class="tag-sell">● SELL</span>'
+    else:
+        return '<span class="tag-hold">● HOLD</span>'
 
-def parse_csv_tickers(file) -> list[str]:
-    """Extract ticker codes from uploaded CSV."""
-    try:
-        df = pd.read_csv(file, dtype=str)
-    except Exception as e:
-        st.error(f"CSV 讀取失敗：{e}")
-        return []
 
-    # Try to find a matching column
-    matched_col = None
-    for col in df.columns:
-        if col.strip().lower() in TICKER_COL_NAMES:
-            matched_col = col
-            break
-    if matched_col is None:
-        matched_col = df.columns[0]  # fall back to first column
-
-    tickers = df[matched_col].dropna().astype(str).str.strip()
-    tickers = tickers[tickers != ""].tolist()
-    return tickers
+def metric_card(label: str, value: str, cls: str = "neu") -> str:
+    return f"""
+    <div class="metric-card">
+      <div class="metric-label">{label}</div>
+      <div class="metric-value {cls}">{value}</div>
+    </div>"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SESSION STATE
+#  STREAMLIT UI
 # ══════════════════════════════════════════════════════════════════════════════
 
-def init_state():
-    defaults = {
-        "screener_results": [],          # list of result dicts from batch run
-        "selected_ticker":  None,        # ticker currently shown in panel
-        "analysis_cache":   {},          # ticker -> result dict cache
-        "batch_tickers":    [],          # list of tickers from CSV or text
-        "batch_ran":        False,
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-init_state()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  TOP NAVIGATION
-# ══════════════════════════════════════════════════════════════════════════════
-
+# ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
-<div class="d-nav">
-  <div class="d-wordmark">
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-      <circle cx="10" cy="10" r="2.5" fill="#141413"/>
-      <line x1="10" y1="10" x2="10" y2="1"  stroke="#141413" stroke-width="1.2" stroke-linecap="round"/>
-      <line x1="10" y1="10" x2="10" y2="19" stroke="#141413" stroke-width="1.2" stroke-linecap="round"/>
-      <line x1="10" y1="10" x2="1"  y2="10" stroke="#141413" stroke-width="1.2" stroke-linecap="round"/>
-      <line x1="10" y1="10" x2="19" y2="10" stroke="#141413" stroke-width="1.2" stroke-linecap="round"/>
-      <line x1="10" y1="10" x2="3.93" y2="3.93"   stroke="#141413" stroke-width="1" stroke-linecap="round"/>
-      <line x1="10" y1="10" x2="16.07" y2="16.07" stroke="#141413" stroke-width="1" stroke-linecap="round"/>
-      <line x1="10" y1="10" x2="16.07" y2="3.93"  stroke="#141413" stroke-width="1" stroke-linecap="round"/>
-      <line x1="10" y1="10" x2="3.93" y2="16.07"  stroke="#141413" stroke-width="1" stroke-linecap="round"/>
-    </svg>
-    TWSE Ensemble Valuation
-  </div>
-  <div style="display:flex;align-items:center;gap:16px;">
-    <span class="pit-pill">PIT Strict</span>
-    <span style="font-size:12px;color:#6c6a64;">XGBoost + KNN · Purged Walk-Forward CV</span>
-  </div>
+<div style="border-bottom:1px solid #1e3a5f; padding-bottom:16px; margin-bottom:24px;">
+  <span style="font-family:'IBM Plex Mono',monospace; font-size:0.7rem;
+               color:#3b82f6; letter-spacing:0.2em; text-transform:uppercase;">
+    Quantitative Research
+  </span>
+  <h1 style="margin:4px 0 0 0; font-size:1.6rem; font-weight:600; color:#e0e6f0;">
+    TWSE Ensemble Valuation System
+  </h1>
+  <p style="color:#4b5e7e; font-size:0.85rem; margin-top:6px;">
+    XGBoost + KNN · Purged Walk-Forward CV · Point-in-Time Strict
+  </p>
 </div>
 """, unsafe_allow_html=True)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SIDEBAR — global parameters
-# ══════════════════════════════════════════════════════════════════════════════
-
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### ⚙️ 模型參數")
-    as_at_date  = st.date_input("基準日 (As At Date)",
-                                value=date.today(),
-                                min_value=date(2015, 1, 1),
-                                max_value=date.today())
-    horizon     = st.slider("預測時間區間 (交易日)", 5, 60, 20)
-    train_years = st.slider("訓練歷史 (年)", 2, 10, 5)
-    validate    = st.checkbox("執行 T+N 驗證（獲取實際價格）", value=False)
+    st.markdown('<div class="section-header">① As At Date</div>',
+                unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.markdown("### 🤖 模型設定")
-    xgb_weight    = st.slider("XGBoost 權重", 0.3, 0.9, 0.6, 0.05)
-    n_neighbors   = st.slider("KNN 近鄰數", 5, 30, 10)
-    buy_threshold = st.slider("買入門檻 (%)", 1, 20, 5)
-
-    st.markdown("---")
-    st.caption("不構成投資建議。僅供研究與教育用途。")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  INPUT SECTION — ticker text OR CSV upload
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown('<div style="padding: 20px 32px 0;">', unsafe_allow_html=True)
-
-col_search, col_csv, col_date_disp = st.columns([3, 2, 1])
-
-with col_search:
-    ticker_text = st.text_input(
-        "代碼（如 2330）或留空顯示全部 · 多個代碼用逗號分隔",
-        placeholder="2330, 2317, 0050 …",
-        label_visibility="visible",
+    # FIX: default to TODAY
+    as_at_date = st.date_input(
+        "Point-in-Time Cutoff",
+        value=date.today(),          # ← was hardcoded 2024-01-18
+        min_value=date(2015, 1, 1),
+        max_value=date.today(),
+        help="Model uses ONLY data on or before this date. Defaults to today.",
     )
 
-with col_csv:
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-    csv_file = st.file_uploader(
-        "上傳 CSV 清單",
-        type=["csv"],
-        help="CSV 第一欄（或欄名為 code/ticker/股票代碼）作為代碼清單",
-        label_visibility="visible",
+    st.markdown('<div class="section-header">② Mode</div>',
+                unsafe_allow_html=True)
+    mode = st.radio("Run Mode", ["📋 Stock List Screening", "🔍 Single Ticker Detail"],
+                    index=0)
+
+    if mode == "🔍 Single Ticker Detail":
+        st.markdown('<div class="section-header">③ Ticker</div>',
+                    unsafe_allow_html=True)
+        ticker_input = st.text_input(
+            "Stock Code (Yahoo Finance format)",
+            value="2330.TW",
+            help="TWSE: append .TW  e.g. 2330.TW  |  ETF: 0050.TW",
+        )
+    else:
+        st.markdown('<div class="section-header">③ Watchlist</div>',
+                    unsafe_allow_html=True)
+        watchlist_raw = st.text_area(
+            "Tickers (one per line, Yahoo format)",
+            value="\n".join(f"{c}.TW" for c, _, _ in DEFAULT_WATCHLIST),
+            height=200,
+            help="One ticker per line e.g. 2330.TW",
+        )
+        ticker_input = None
+
+    st.markdown('<div class="section-header">④ Horizon & History</div>',
+                unsafe_allow_html=True)
+    horizon     = st.slider("Prediction Horizon (trading days)", 5, 60, 20)
+    train_years = st.slider("Training History (years)", 2, 10, 5)
+
+    # FIX: compute train_start from as_at_date (not today)
+    train_start = (pd.to_datetime(as_at_date) -
+                   pd.DateOffset(years=train_years)).strftime("%Y-%m-%d")
+
+    # Validation only makes sense when as_at_date is sufficiently in the past
+    days_since_asat = (date.today() - as_at_date).days
+    can_validate    = days_since_asat >= horizon
+    validate = st.checkbox(
+        f"Validate vs Actual T+{horizon} price",
+        value=can_validate,
+        disabled=not can_validate,
+        help="Only available when As At Date is at least T+horizon days in the past.",
     )
+    if not can_validate:
+        st.caption(f"⚠ As At Date is too recent for T+{horizon} validation "
+                   f"(need {horizon} more days).")
 
-with col_date_disp:
-    st.markdown(
-        f"<div style='padding-top:28px;font-size:12px;color:#6c6a64;'>"
-        f"基準日<br><span style='font-family:JetBrains Mono,monospace;"
-        f"font-size:14px;color:#141413;font-weight:500;'>"
-        f"{as_at_date.strftime('%Y/%m/%d')}</span></div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="section-header">⑤ Model Config</div>',
+                unsafe_allow_html=True)
+    xgb_weight    = st.slider("XGBoost Weight", 0.3, 0.9, 0.6, 0.05)
+    n_neighbors   = st.slider("KNN Neighbors", 5, 30, 10)
+    buy_threshold = st.slider("Buy Signal Threshold (%)", 1, 20, 5)
 
-# Resolve ticker list
-if csv_file is not None:
-    csv_tickers = parse_csv_tickers(csv_file)
-    if csv_tickers:
-        st.success(f"✓ 從 CSV 讀取 {len(csv_tickers)} 個代碼：{', '.join(csv_tickers[:8])}{'…' if len(csv_tickers) > 8 else ''}")
-        st.session_state["batch_tickers"] = csv_tickers
-elif ticker_text.strip():
-    manual = [t.strip().upper() for t in ticker_text.split(",") if t.strip()]
-    st.session_state["batch_tickers"] = manual
-else:
-    # Default watchlist when nothing provided
-    if not st.session_state["batch_tickers"]:
-        st.session_state["batch_tickers"] = [
-            "2330", "2317", "2308", "2360", "2408",
-            "2345", "3037", "3533", "4938", "2382",
-        ]
-
-col_run, col_reset = st.columns([1, 5])
-with col_run:
-    run_batch = st.button("▶ 執行批次估值")
-with col_reset:
-    if st.button("重置", key="reset_btn"):
-        st.session_state["screener_results"] = []
-        st.session_state["selected_ticker"]  = None
-        st.session_state["analysis_cache"]   = {}
-        st.session_state["batch_ran"]        = False
-        st.rerun()
-
-st.markdown('</div>', unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  BATCH RUN
-# ══════════════════════════════════════════════════════════════════════════════
-
-if run_batch:
-    tickers = st.session_state["batch_tickers"]
-    results = []
-    prog    = st.progress(0, text="批次估值中…")
-    for i, t in enumerate(tickers):
-        prog.progress((i + 1) / len(tickers), text=f"分析 {t} … ({i+1}/{len(tickers)})")
-        try:
-            res = run_single_analysis(
-                t, as_at_date, horizon, train_years,
-                xgb_weight, n_neighbors, buy_threshold, validate
-            )
-            results.append(res)
-            st.session_state["analysis_cache"][res["ticker"]] = res
-        except Exception as e:
-            results.append({"ticker": t, "error": str(e)})
-    prog.empty()
-    st.session_state["screener_results"] = results
-    st.session_state["batch_ran"]        = True
-    st.rerun()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SUMMARY BAR (only when results exist)
-# ══════════════════════════════════════════════════════════════════════════════
-
-results = st.session_state["screener_results"]
-good    = [r for r in results if "error" not in r]
-
-if good:
-    n_buy  = sum(1 for r in good if r["signal"] == "買入")
-    n_hold = sum(1 for r in good if r["signal"] == "持有")
-    n_sell = sum(1 for r in good if r["signal"] == "賣出")
-    avg_ret = np.mean([r["pred"]["ens_ret_pct"] for r in good])
-    upd_time = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
-
-    st.markdown(f"""
-    <div class="d-summary-bar">
-      <div class="d-sum-item">
-        <div class="d-sum-label">覆蓋標的</div>
-        <div class="d-sum-value">{len(good)}</div>
-      </div>
-      <div class="d-sum-div"></div>
-      <div class="d-sum-item">
-        <div class="d-sum-label">買入</div>
-        <div class="d-sum-value buy">{n_buy}</div>
-      </div>
-      <div class="d-sum-div"></div>
-      <div class="d-sum-item">
-        <div class="d-sum-label">持有</div>
-        <div class="d-sum-value hold">{n_hold}</div>
-      </div>
-      <div class="d-sum-div"></div>
-      <div class="d-sum-item">
-        <div class="d-sum-label">賣出</div>
-        <div class="d-sum-value sell">{n_sell}</div>
-      </div>
-      <div class="d-sum-div"></div>
-      <div class="d-sum-item">
-        <div class="d-sum-label">平均報酬</div>
-        <div class="d-sum-value ret">{avg_ret:+.2f}%</div>
-      </div>
-      <div class="d-sum-div"></div>
-      <div class="d-sum-item" style="margin-left:auto;">
-        <div class="d-sum-label">批次基準日</div>
-        <div class="d-sum-value" style="font-size:14px;">{as_at_date.strftime('%Y-%m-%d')}</div>
-      </div>
-      <div class="d-sum-div"></div>
-      <div class="d-sum-item">
-        <div class="d-sum-label">最後更新</div>
-        <div class="d-sum-value" style="font-size:14px;">{upd_time}</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SCREENER TABLE + ANALYSIS PANEL
-# ══════════════════════════════════════════════════════════════════════════════
-
-if not good and not st.session_state["batch_ran"]:
-    # Empty state
+    st.markdown('<div class="section-header">About</div>',
+                unsafe_allow_html=True)
     st.markdown("""
-    <div style="text-align:center;padding:80px 32px;color:#6c6a64;">
-      <div style="font-family:'EB Garamond',serif;font-size:48px;color:#e6dfd8;">◈</div>
-      <div style="font-family:'EB Garamond',serif;font-size:28px;color:#141413;
-                  margin:16px 0 8px;letter-spacing:-0.3px;">
-        開始您的估值分析
-      </div>
-      <div style="font-size:14px;line-height:1.7;max-width:420px;margin:0 auto;">
-        輸入代碼或上傳 CSV 清單，按下<strong>執行批次估值</strong>。<br>
-        點擊結果列表中的任一標的，即可查看完整 Step 3 估值報告。
-      </div>
+    <div style="font-size:0.75rem; color:#4b5e7e; line-height:1.6;">
+    Ensemble model combining XGBoost (non-linear financial features)
+    with K-Nearest Neighbors (historical pattern matching).<br><br>
+    <span class="pit-badge">PIT STRICT</span> No future data leakage.
+    Purged walk-forward cross-validation enforced.
     </div>
     """, unsafe_allow_html=True)
 
-elif good:
-    # Signal filter tabs
-    st.markdown('<div style="padding:0 32px;">', unsafe_allow_html=True)
-    tab_all, tab_buy, tab_hold, tab_sell = st.tabs([
-        f"全部 {len(good)}",
-        f"買入 {n_buy}",
-        f"持有 {n_hold}",
-        f"賣出 {n_sell}",
-    ])
+    run_btn = st.button("▶  Run Valuation")
 
-    def render_screener(filtered_results, tab_id="all"):
-        selected = st.session_state.get("selected_ticker")
-        table_col, panel_col = st.columns([3, 1.1])
+as_at_dt = pd.to_datetime(as_at_date)
 
-        with table_col:
-            # Table header
-            hcols = st.columns([0.7, 2.5, 0.8, 1, 1.2, 1, 1, 0.8])
-            for label, col in zip(
-                ["代碼", "名稱 & 業務", "產業", "現價", "目標價", "預期報酬", "訊號", "RMSE"],
-                hcols
-            ):
-                col.markdown(
-                    f"<div style='font-size:10px;font-weight:500;letter-spacing:0.8px;"
-                    f"text-transform:uppercase;color:#6c6a64;padding:6px 0;"
-                    f"border-bottom:1px solid #e6dfd8;'>{label}</div>",
-                    unsafe_allow_html=True
-                )
-
-            for r in filtered_results:
-                if "error" in r:
-                    st.markdown(
-                        f"<div style='padding:8px 0;font-size:12px;color:#c64545;'>"
-                        f"❌ {r['ticker']}: {r['error']}</div>",
-                        unsafe_allow_html=True
-                    )
-                    continue
-
-                ticker   = r["ticker"]
-                code     = ticker.replace(".TW", "")
-                pred     = r["pred"]
-                signal   = r["signal"]
-                rmse_avg = r["cv_rmse_avg"] or 0
-                cur_p    = r["current_price"]
-                ens_p    = pred["ens_price"]
-                ret_pct  = pred["ens_ret_pct"]
-
-                # Signal badge
-                if signal == "買入":
-                    sig_html = '<span class="d-signal-buy">● 買入</span>'
-                elif signal == "賣出":
-                    sig_html = '<span class="d-signal-sell">● 賣出</span>'
-                else:
-                    sig_html = '<span class="d-signal-hold">● 持有</span>'
-
-                ret_color = "#4a9e5c" if ret_pct > 0 else "#c64545"
-                rmse_pct  = min(int(rmse_avg / 0.25 * 100), 100)
-                rmse_bar_col = "#5db8a6" if rmse_avg < 0.12 else ("#e8a55a" if rmse_avg < 0.18 else "#c64545")
-
-                # Active row highlight
-                is_active = (selected == ticker)
-                row_bg    = "#efe9de" if is_active else "transparent"
-                row_border = "border-left:3px solid #cc785c;" if is_active else "border-left:3px solid transparent;"
-
-                row_cols = st.columns([0.7, 2.5, 0.8, 1, 1.2, 1, 1, 0.8])
-                row_cols[0].markdown(
-                    f"<div style='padding:10px 0 10px;{row_border}background:{row_bg};"
-                    f"font-family:JetBrains Mono,monospace;font-size:13px;"
-                    f"font-weight:500;color:#cc785c;'>{code}</div>",
-                    unsafe_allow_html=True
-                )
-                row_cols[1].markdown(
-                    f"<div style='padding:10px 4px;background:{row_bg};'>"
-                    f"<div style='font-size:13px;font-weight:500;color:#141413;'>{code}</div>"
-                    f"<div style='font-size:10px;color:#6c6a64;'>TWSE · {ticker}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-                row_cols[2].markdown(
-                    '<div style="padding:10px 0;">'
-                    '<span class="d-badge-semi">半導體</span></div>',
-                    unsafe_allow_html=True
-                )
-                row_cols[3].markdown(
-                    f"<div style='padding:10px 0;font-family:JetBrains Mono,monospace;"
-                    f"font-size:13px;color:#3d3d3a;text-align:right;'>{cur_p:,.2f}</div>",
-                    unsafe_allow_html=True
-                )
-                row_cols[4].markdown(
-                    f"<div style='padding:10px 0;text-align:right;'>"
-                    f"<div style='font-family:JetBrains Mono,monospace;font-size:13px;"
-                    f"font-weight:500;color:#cc785c;'>{ens_p:,.2f}</div>"
-                    f"<div style='font-size:10px;color:#6c6a64;'>"
-                    f"xgb {pred['xgb_price']:,.0f} · knn {pred['knn_price']:,.0f}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-                row_cols[5].markdown(
-                    f"<div style='padding:10px 0;font-family:JetBrains Mono,monospace;"
-                    f"font-size:13px;font-weight:500;color:{ret_color};"
-                    f"text-align:right;'>{ret_pct:+.2f}%</div>",
-                    unsafe_allow_html=True
-                )
-                row_cols[6].markdown(
-                    f"<div style='padding:10px 0;text-align:right;'>{sig_html}</div>",
-                    unsafe_allow_html=True
-                )
-                row_cols[7].markdown(
-                    f"<div style='padding:10px 0;text-align:right;'>"
-                    f"<div style='font-family:JetBrains Mono,monospace;font-size:11px;"
-                    f"color:#6c6a64;'>{rmse_avg:.3f}</div>"
-                    f"<div style='height:3px;background:#e6dfd8;border-radius:9999px;"
-                    f"overflow:hidden;margin-top:4px;'>"
-                    f"<div style='height:100%;width:{rmse_pct}%;background:{rmse_bar_col};"
-                    f"border-radius:9999px;'></div></div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-
-                # Click button (invisible label, styled as row)
-                if row_cols[0].button("▶", key=f"sel_{tab_id}_{ticker}", help=f"分析 {ticker}"):
-                    st.session_state["selected_ticker"] = ticker
-                    # Run analysis if not cached
-                    if ticker not in st.session_state["analysis_cache"]:
-                        with st.spinner(f"分析 {ticker}…"):
-                            try:
-                                res2 = run_single_analysis(
-                                    ticker, as_at_date, horizon, train_years,
-                                    xgb_weight, n_neighbors, buy_threshold, validate
-                                )
-                                st.session_state["analysis_cache"][ticker] = res2
-                            except Exception as e:
-                                st.error(f"分析失敗：{e}")
-                    st.rerun()
-
-        # ── Analysis panel ─────────────────────────────────────────────────
-        with panel_col:
-            sel = st.session_state.get("selected_ticker")
-            cache = st.session_state.get("analysis_cache", {})
-
-            if sel and sel in cache:
-                r = cache[sel]
-                pred    = r["pred"]
-                rmse_l  = r["fold_rmse"]
-                rmse_a  = r["cv_rmse_avg"] or 0
-                cur_p   = r["current_price"]
-                ens_p   = pred["ens_price"]
-                ret_pct = pred["ens_ret_pct"]
-                xgb_p   = pred["xgb_price"]
-                knn_p   = pred["knn_price"]
-                sig     = r["signal"]
-                act_p   = r.get("actual_price")
-
-                ret_color = "#4a9e5c" if ret_pct > 0 else "#c64545"
-                code = sel.replace(".TW", "")
-
-                st.markdown(
-                    f"<div style='border-bottom:1px solid #e6dfd8;padding:14px 0 12px;"
-                    f"display:flex;align-items:flex-start;justify-content:space-between;'>"
-                    f"<div>"
-                    f"<div style='font-family:JetBrains Mono,monospace;font-size:16px;"
-                    f"font-weight:500;color:#cc785c;'>{sel}</div>"
-                    f"<div style='font-family:EB Garamond,serif;font-size:18px;"
-                    f"color:#141413;margin-top:2px;'>{code}</div>"
-                    f"</div></div>",
-                    unsafe_allow_html=True
-                )
-
-                if st.button("✕ 關閉", key=f"close_panel_{tab_id}"):
-                    st.session_state["selected_ticker"] = None
-                    st.rerun()
-
-                # KPI mini cards
-                st.markdown('<div class="d-section-label" style="margin-top:14px;">估值結果</div>', unsafe_allow_html=True)
-
-                c1, c2 = st.columns(2)
-                c1.markdown(f"""
-                <div class="d-kpi-card">
-                  <div class="d-kpi-label">現價</div>
-                  <div class="d-kpi-value" style="font-size:20px;">{cur_p:,.2f}</div>
-                </div>""", unsafe_allow_html=True)
-                c2.markdown(f"""
-                <div class="d-kpi-card">
-                  <div class="d-kpi-label">Ensemble 目標價</div>
-                  <div class="d-kpi-value coral" style="font-size:20px;">{ens_p:,.2f}</div>
-                </div>""", unsafe_allow_html=True)
-                c1.markdown(f"""
-                <div class="d-kpi-card">
-                  <div class="d-kpi-label">預期報酬</div>
-                  <div class="d-kpi-value {'up' if ret_pct>0 else 'down'}" style="font-size:20px;">{ret_pct:+.2f}%</div>
-                </div>""", unsafe_allow_html=True)
-                c2.markdown(f"""
-                <div class="d-kpi-card">
-                  <div class="d-kpi-label">CV RMSE 平均</div>
-                  <div class="d-kpi-value" style="font-size:20px;">{rmse_a:.4f}</div>
-                </div>""", unsafe_allow_html=True)
-
-                # Model breakdown
-                st.markdown('<div class="d-section-label" style="margin-top:4px;">模型拆解</div>', unsafe_allow_html=True)
-                max_p = max(cur_p, xgb_p, knn_p, ens_p) * 1.05
-                for name, price, color in [
-                    ("XGBoost (60%)", xgb_p, "#5db8a6"),
-                    ("KNN (40%)",     knn_p, "#e8a55a"),
-                    ("Ensemble",      ens_p, "#cc785c"),
-                ]:
-                    pct = int(price / max_p * 100)
-                    st.markdown(
-                        f"<div class='d-model-item' style='margin-bottom:8px;'>"
-                        f"<div class='d-model-meta'>"
-                        f"<span style='font-size:11px;font-weight:500;color:#6c6a64;'>{name}</span>"
-                        f"<span style='font-family:JetBrains Mono,monospace;font-size:12px;color:#141413;'>{price:,.2f}</span>"
-                        f"</div>"
-                        f"<div class='d-bar-track' style='background:#e6dfd8;'>"
-                        f"<div class='d-bar-fill' style='width:{pct}%;background:{color};'></div>"
-                        f"</div></div>",
-                        unsafe_allow_html=True
-                    )
-
-                # Validation
-                if act_p:
-                    err_pct = (ens_p - act_p) / act_p * 100
-                    abs_err = abs(ens_p - act_p)
-                    ok = abs(err_pct) < 5
-                    st.markdown('<div class="d-section-label" style="margin-top:4px;">T+N 驗證</div>', unsafe_allow_html=True)
-                    v1, v2, v3 = st.columns(3)
-                    v1.markdown(f'<div class="d-val-card"><div class="d-val-label">實際價格</div><div class="d-val-value">{act_p:,.2f}</div></div>', unsafe_allow_html=True)
-                    v2.markdown(f'<div class="d-val-card"><div class="d-val-label">絕對誤差</div><div class="d-val-value">{abs_err:,.2f}</div></div>', unsafe_allow_html=True)
-                    cls = "success" if ok else "error"
-                    v3.markdown(f'<div class="d-val-card"><div class="d-val-label">誤差率</div><div class="d-val-value {cls}">{err_pct:+.2f}%</div></div>', unsafe_allow_html=True)
-
-                # CV folds
-                st.markdown('<div class="d-section-label" style="margin-top:8px;">Walk-Forward CV · 5折</div>', unsafe_allow_html=True)
-                fold_cols = st.columns(len(rmse_l) if rmse_l else 5)
-                for i, (fc, fv) in enumerate(zip(fold_cols, rmse_l or [])):
-                    fc.markdown(
-                        f"<div class='d-fold-card'><div class='d-fold-label'>F{i+1}</div>"
-                        f"<div class='d-fold-val'>{fv:.3f}</div></div>",
-                        unsafe_allow_html=True
-                    )
-
-                # Chart — re-fetch data (DataFrames not stored in session state)
-                st.markdown('<div class="d-section-label" style="margin-top:8px;">技術分析圖表</div>', unsafe_allow_html=True)
-                with st.spinner("繪製圖表…"):
-                    try:
-                        _raw = load_data(sel, r["train_start"], r["as_at_str"])
-                        _feat = compute_features(_raw)
-                        _feat = _feat[_feat.index <= pd.to_datetime(r["as_at_str"])]
-                        fig = make_chart(_feat, pred, pd.to_datetime(as_at_date), horizon, act_p)
-                        st.pyplot(fig, use_container_width=True)
-                        plt.close()
-                    except Exception as _ce:
-                        st.warning(f"圖表載入失敗：{_ce}")
-
-                # Export CSV
-                st.markdown("<div style='margin-top:12px;'>", unsafe_allow_html=True)
-                export_data = {
-                    "ticker":        [sel],
-                    "as_at_date":    [str(as_at_date)],
-                    "current_price": [cur_p],
-                    "xgb_target":    [xgb_p],
-                    "knn_target":    [knn_p],
-                    "ensemble_target": [ens_p],
-                    "expected_ret_pct": [ret_pct],
-                    "signal":        [sig],
-                    "cv_rmse_avg":   [rmse_a],
-                    "actual_price":  [act_p],
-                }
-                export_df = pd.DataFrame(export_data)
-                st.download_button(
-                    label="⬇ 匯出此標的 CSV",
-                    data=export_df.to_csv(index=False).encode("utf-8-sig"),
-                    file_name=f"{code}_{as_at_date}_valuation.csv",
-                    mime="text/csv",
-                )
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            else:
-                # Empty panel state
-                st.markdown("""
-                <div style="display:flex;flex-direction:column;align-items:center;
-                            justify-content:center;min-height:300px;text-align:center;
-                            padding:24px;">
-                  <div style="width:48px;height:48px;background:#efe9de;border-radius:12px;
-                              display:flex;align-items:center;justify-content:center;
-                              margin-bottom:14px;font-size:20px;color:#6c6a64;">◈</div>
-                  <div style="font-family:'EB Garamond',serif;font-size:20px;
-                              color:#141413;margin-bottom:6px;">點擊列表中的標的</div>
-                  <div style="font-size:12px;color:#6c6a64;line-height:1.7;">
-                    按左側 ▶ 按鈕選取任一標的<br>系統將執行完整 Step 3 估值分析
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-    with tab_all:
-        render_screener(good, "all")
-    with tab_buy:
-        render_screener([r for r in good if r["signal"] == "買入"], "buy")
-    with tab_hold:
-        render_screener([r for r in good if r["signal"] == "持有"], "hold")
-    with tab_sell:
-        render_screener([r for r in good if r["signal"] == "賣出"], "sell")
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # Bulk export
-    if good:
-        st.markdown('<div style="padding:0 32px;">', unsafe_allow_html=True)
-        bulk_rows = []
-        for r in good:
-            if "error" in r:
-                continue
-            bulk_rows.append({
-                "ticker":            r["ticker"],
-                "as_at_date":        str(as_at_date),
-                "current_price":     r["current_price"],
-                "xgb_target":        r["pred"]["xgb_price"],
-                "knn_target":        r["pred"]["knn_price"],
-                "ensemble_target":   r["pred"]["ens_price"],
-                "expected_ret_pct":  r["pred"]["ens_ret_pct"],
-                "signal":            r["signal"],
-                "cv_rmse_avg":       r["cv_rmse_avg"],
-                "actual_price":      r.get("actual_price"),
-            })
-        bulk_df = pd.DataFrame(bulk_rows)
-        st.markdown("""
-        <div class="d-coral-cta">
-          <div>
-            <h2>匯出或部署此篩選器</h2>
-            <p>下載批次 CSV · 部署至 Streamlit · 連接 FinMind API</p>
+# ══════════════════════════════════════════════════════════════════════════════
+#  IDLE STATE
+# ══════════════════════════════════════════════════════════════════════════════
+if not run_btn:
+    # Show a helpful summary of what will run
+    if mode == "📋 Stock List Screening":
+        tickers_preview = [t.strip() for t in watchlist_raw.splitlines() if t.strip()]
+        st.markdown(f"""
+        <div style="text-align:center; padding:60px 0;">
+          <div style="font-family:'IBM Plex Mono',monospace; font-size:2.5rem; color:#1e3a5f;">◈</div>
+          <div style="font-size:1rem; margin-top:16px; color:#4b5e7e;">
+            Ready to screen <strong style="color:#60a5fa;">{len(tickers_preview)} stocks</strong>
+            as at <strong style="color:#60a5fa;">{as_at_date}</strong><br>
+            Prediction horizon: <strong style="color:#60a5fa;">T+{horizon} trading days</strong>
+          </div>
+          <div style="margin-top:12px; font-size:0.8rem; color:#374151;">
+            Press <strong>▶ Run Valuation</strong> in the sidebar to start.
           </div>
         </div>
         """, unsafe_allow_html=True)
-        st.download_button(
-            label="⬇ 下載全部結果 CSV",
-            data=bulk_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"twse_valuation_{as_at_date}.csv",
-            mime="text/csv",
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style="text-align:center; padding:60px 0;">
+          <div style="font-family:'IBM Plex Mono',monospace; font-size:2.5rem; color:#1e3a5f;">◈</div>
+          <div style="font-size:1rem; margin-top:16px; color:#4b5e7e;">
+            Ready to value <strong style="color:#60a5fa;">{ticker_input}</strong>
+            as at <strong style="color:#60a5fa;">{as_at_date}</strong>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    st.stop()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  FOOTER
+#  DETAIL VIEW FUNCTION  (defined here so both modes can call it)
 # ══════════════════════════════════════════════════════════════════════════════
+def _show_detail(detail, as_at_dt, horizon, validate,
+                 ticker_input, train_start, xgb_weight, n_neighbors,
+                 buy_threshold):
+    pred          = detail
+    current_price = detail["current_price"]
+    fold_rmse     = detail["fold_rmse"]
+    train_feat    = detail["train_feat"]
+    raw           = detail["raw"]
 
+    ret_cls = "up" if pred["ens_ret_pct"] > 0 else "down"
+    signal  = ("BUY 🟢" if pred["ens_ret_pct"] > buy_threshold
+               else "SELL 🔴" if pred["ens_ret_pct"] < -buy_threshold
+               else "HOLD ⚪")
+
+    st.markdown(
+        f'<div class="section-header">{ticker_input} · As At {as_at_dt.date()}'
+        f' · T+{horizon}d Forecast</div>',
+        unsafe_allow_html=True)
+
+    cols = st.columns(5)
+    kpis = [
+        ("Current Price",   f"{current_price:.2f} TWD",          "neu"),
+        ("Ensemble Target", f"{pred['ens_price']:.2f} TWD",       ret_cls),
+        ("Expected Return", f"{pred['ens_ret_pct']:+.2f}%",       ret_cls),
+        ("Signal",          signal,                                ret_cls),
+        ("CV RMSE (avg)",   f"{np.mean(fold_rmse):.4f}" if fold_rmse else "N/A", "neu"),
+    ]
+    for col, (label, value, cls) in zip(cols, kpis):
+        col.markdown(metric_card(label, value, cls), unsafe_allow_html=True)
+
+    # ── Validation ────────────────────────────────────────────────────────
+    actual_price = None
+    if validate:
+        future_end = (as_at_dt + timedelta(days=horizon * 3)).strftime("%Y-%m-%d")
+        with st.spinner(f"Fetching actual T+{horizon} price…"):
+            try:
+                future_raw    = load_data(ticker_input,
+                                          as_at_dt.strftime("%Y-%m-%d"),
+                                          future_end)
+                future_closes = future_raw["Close"].iloc[1:]
+                if len(future_closes) >= horizon:
+                    actual_price = float(future_closes.iloc[horizon - 1])
+                elif len(future_closes) > 0:
+                    actual_price = float(future_closes.iloc[-1])
+                    st.info(f"ℹ Only {len(future_closes)} future days available; "
+                            f"using last available close.")
+            except Exception:
+                st.warning("Could not fetch future price for validation.")
+
+        if actual_price:
+            err_pct = (pred["ens_price"] - actual_price) / actual_price * 100
+            abs_err = abs(pred["ens_price"] - actual_price)
+            ok_flag = abs(err_pct) < 5
+            tag     = ('<span class="tag-success">✓ ERROR &lt; 5%</span>'
+                       if ok_flag else
+                       '<span class="tag-warn">⚠ ERROR ≥ 5%</span>')
+            err_cls = "up" if ok_flag else "down"
+
+            st.markdown('<div class="section-header">Validation Results</div>',
+                        unsafe_allow_html=True)
+            vcols = st.columns(4)
+            vkpis = [
+                (f"Actual T+{horizon}", f"{actual_price:.2f} TWD", "neu"),
+                ("Absolute Error",      f"{abs_err:.2f} TWD",       err_cls),
+                ("Error %",             f"{err_pct:+.3f}%",          err_cls),
+                ("Verdict",             tag,                          ""),
+            ]
+            for col, (lbl, val, cls) in zip(vcols, vkpis):
+                if cls:
+                    col.markdown(metric_card(lbl, val, cls), unsafe_allow_html=True)
+                else:
+                    col.markdown(f"""
+                    <div class="metric-card">
+                      <div class="metric-label">{lbl}</div>
+                      <div style="margin-top:10px;">{val}</div>
+                    </div>""", unsafe_allow_html=True)
+
+    # ── Chart ─────────────────────────────────────────────────────────────
+    st.markdown('<div class="section-header">Technical Analysis</div>',
+                unsafe_allow_html=True)
+    fig = make_chart(train_feat, pred, as_at_dt, horizon, actual_price)
+    st.pyplot(fig, use_container_width=True)
+    plt.close()
+
+    # ── CV detail ─────────────────────────────────────────────────────────
+    if fold_rmse:
+        st.markdown('<div class="section-header">Walk-Forward CV Detail</div>',
+                    unsafe_allow_html=True)
+        cv_cols = st.columns(len(fold_rmse))
+        for i, (col, rmse) in enumerate(zip(cv_cols, fold_rmse)):
+            col.markdown(f"""
+            <div class="metric-card" style="text-align:center;">
+              <div class="metric-label">Fold {i+1}</div>
+              <div class="metric-value" style="font-size:1rem;">{rmse:.5f}</div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Feature table ──────────────────────────────────────────────────────
+    last_row = train_feat[FEATURE_COLS].dropna().iloc[-1]
+    with st.expander("Feature Snapshot (As At Date)"):
+        st.dataframe(last_row.to_frame("Value").round(5), use_container_width=True)
+
+    with st.expander("Raw Price Data (last 60 bars)"):
+        st.dataframe(raw[raw.index <= as_at_dt].tail(60).round(2)[::-1],
+                     use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODE A — STOCK LIST SCREENING
+# ══════════════════════════════════════════════════════════════════════════════
+if mode == "📋 Stock List Screening":
+    tickers = [t.strip() for t in watchlist_raw.splitlines() if t.strip()]
+
+    st.markdown(
+        f'<div class="section-header">Stock Screening — As At {as_at_date}'
+        f' · {len(tickers)} stocks · T+{horizon}d horizon</div>',
+        unsafe_allow_html=True)
+
+    # Build a lookup for names
+    name_map = {f"{c}.TW": n for c, n, _ in DEFAULT_WATCHLIST}
+
+    results = []
+    prog = st.progress(0, text="Running ensemble valuation…")
+    for i, tk in enumerate(tickers):
+        prog.progress((i + 1) / len(tickers), text=f"Processing {tk}…")
+        r = run_valuation_for_ticker(
+            tk, as_at_dt, train_start,
+            xgb_weight=xgb_weight, n_neighbors=n_neighbors)
+        r["ticker"] = tk
+        r["name"]   = name_map.get(tk, tk.replace(".TW", ""))
+        results.append(r)
+    prog.empty()
+
+    ok      = [r for r in results if "error" not in r]
+    failed  = [r for r in results if "error" in r]
+
+    if not ok:
+        st.error("All tickers failed. Check your watchlist or network.")
+        st.stop()
+
+    # Sort by expected return descending
+    ok.sort(key=lambda r: r["ens_ret_pct"], reverse=True)
+
+    # ── Summary table ──────────────────────────────────────────────────────
+    rows = []
+    for r in ok:
+        sig = ("BUY" if r["ens_ret_pct"] > buy_threshold
+               else "SELL" if r["ens_ret_pct"] < -buy_threshold
+               else "HOLD")
+        rows.append({
+            "Ticker":          r["ticker"],
+            "Name":            r["name"],
+            "Price (TWD)":     r["current_price"],
+            "Target (TWD)":    r["ens_price"],
+            "XGBoost":         r["xgb_price"],
+            "KNN":             r["knn_price"],
+            "Expected Ret %":  r["ens_ret_pct"],
+            "Signal":          sig,
+            "CV RMSE":         r["cv_rmse"],
+        })
+
+    df_results = pd.DataFrame(rows)
+
+    # Colour-map the table
+    def colour_signal(val):
+        if val == "BUY":
+            return "background-color:#064e3b; color:#34d399"
+        elif val == "SELL":
+            return "background-color:#4c0519; color:#f87171"
+        return "background-color:#1c1917; color:#a8a29e"
+
+    def colour_ret(val):
+        try:
+            v = float(val)
+            if v > 0:  return "color:#34d399"
+            if v < 0:  return "color:#f87171"
+        except Exception:
+            pass
+        return ""
+
+    styled = (df_results.style
+              .applymap(colour_signal, subset=["Signal"])
+              .applymap(colour_ret,    subset=["Expected Ret %"])
+              .format({
+                  "Price (TWD)":    "{:.2f}",
+                  "Target (TWD)":   "{:.2f}",
+                  "XGBoost":        "{:.2f}",
+                  "KNN":            "{:.2f}",
+                  "Expected Ret %": "{:+.3f}%",
+                  "CV RMSE":        "{:.5f}",
+              })
+              .set_properties(**{"background-color": "#111827", "color": "#e0e6f0",
+                                 "font-family": "IBM Plex Mono, monospace",
+                                 "font-size": "0.8rem"}))
+    st.dataframe(styled, use_container_width=True, height=420)
+
+    if failed:
+        with st.expander(f"⚠ {len(failed)} tickers failed"):
+            for r in failed:
+                st.text(f"{r['ticker']}: {r['error']}")
+
+    # ── Drill-down selector ────────────────────────────────────────────────
+    st.markdown('<div class="section-header">Drill Down — Single Ticker Detail</div>',
+                unsafe_allow_html=True)
+    selected_ticker = st.selectbox(
+        "Select a ticker to view details",
+        options=[r["ticker"] for r in ok],
+        format_func=lambda t: f"{t}  {name_map.get(t, '')}",
+    )
+    show_detail = st.button("View Detail →")
+
+    if show_detail:
+        detail = next(r for r in ok if r["ticker"] == selected_ticker)
+        _show_detail(detail, as_at_dt, horizon, validate,
+                     selected_ticker, train_start, xgb_weight, n_neighbors,
+                     buy_threshold)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODE B — SINGLE TICKER DETAIL
+# ══════════════════════════════════════════════════════════════════════════════
+else:
+    with st.spinner(f"Running ensemble valuation for {ticker_input}…"):
+        detail = run_valuation_for_ticker(
+            ticker_input, as_at_dt, train_start,
+            xgb_weight=xgb_weight, n_neighbors=n_neighbors)
+
+    if "error" in detail:
+        st.error(f"❌ Valuation failed: {detail['error']}")
+        st.stop()
+
+    _show_detail(detail, as_at_dt, horizon, validate,
+                 ticker_input, train_start, xgb_weight, n_neighbors,
+                 buy_threshold)
+
+
+# ── Footer ─────────────────────────────────────────────────────────────────────
 st.markdown("""
-<div class="d-footer">
-  <div>
-    <div class="d-footer-brand">TWSE Ensemble Valuation System</div>
-    <div class="d-footer-text">XGBoost + KNN · Purged Walk-Forward CV · Point-in-Time Strict · 不構成投資建議</div>
-  </div>
-  <div style="display:flex;gap:12px;align-items:center;">
-    <span class="pit-pill">PIT Strict</span>
-    <span style="font-size:12px;color:#a09d96;">僅供研究與教育用途</span>
-  </div>
+<div style="border-top:1px solid #1e3a5f; margin-top:40px; padding-top:16px;
+            font-family:'IBM Plex Mono',monospace; font-size:0.68rem; color:#1e3a5f;
+            text-align:center;">
+  TWSE Ensemble Valuation System · Point-in-Time Strict · Purged Walk-Forward CV
+  · Not financial advice
 </div>
 """, unsafe_allow_html=True)
