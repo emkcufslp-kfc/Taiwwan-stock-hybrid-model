@@ -463,11 +463,11 @@ footer{background:var(--dark);padding:22px 40px;display:flex;justify-content:spa
   </div>
   <div class="csv-notice">CSV 上傳流程：點擊「上傳 CSV 清單」→ 選擇檔案 → 系統自動匯入代碼清單並批次執行估值，結果顯示於下方列表。</div>
   <div class="signal-tabs">
-    <div class="stab active" onclick="setSig('all',this)">全部<span class="cnt">100</span></div>
-    <div class="stab buy" onclick="setSig('buy',this)">● 買入<span class="cnt">21</span></div>
-    <div class="stab hold" onclick="setSig('hold',this)">● 持有<span class="cnt">70</span></div>
-    <div class="stab sell" onclick="setSig('sell',this)">● 賣出<span class="cnt">9</span></div>
-    <button class="stab-right" onclick="toggleAll()">▼ 顯示全部 100 筆</button>
+    <div class="stab active" onclick="setSig('all',this)">全部<span class="cnt" id="tab-all">—</span></div>
+    <div class="stab buy" onclick="setSig('buy',this)">● 買入<span class="cnt" id="tab-buy">—</span></div>
+    <div class="stab hold" onclick="setSig('hold',this)">● 持有<span class="cnt" id="tab-hold">—</span></div>
+    <div class="stab sell" onclick="setSig('sell',this)">● 賣出<span class="cnt" id="tab-sell">—</span></div>
+    <button class="stab-right" id="btn-showall" onclick="toggleAll()">▼ 顯示全部</button>
   </div>
   <div class="screener-body">
     <div class="table-area">
@@ -895,6 +895,12 @@ async function loadManifest(){
     $('sb-avgret').className='sb-value '+(ar>=0?'green':'red');
     $('sb-asatdate').textContent=m.as_at_date||'—';
     $('sb-status').textContent=`✓ ${m.total} 支，預計算資料`;
+    // update tab badge counts
+    $('tab-all').textContent=m.total;
+    $('tab-buy').textContent=m.buy;
+    $('tab-hold').textContent=m.hold;
+    $('tab-sell').textContent=m.sell;
+    $('btn-showall').textContent=`▼ 顯示全部 ${m.total} 筆`;
     renderTbl();
   }catch(e){
     $('sb-status').textContent='⚠ 無法載入 manifest，使用範例資料';
