@@ -407,8 +407,8 @@ def run_single_analysis(ticker: str, as_at_date, horizon: int,
         "cv_rmse_avg":   float(np.mean(fold_rmse)) if fold_rmse else None,
         "signal":        signal,
         "actual_price":  actual_price,
-        "train_feat":    train_feat,
-        "train_raw":     train_raw,
+        "train_start":   train_start,
+        "as_at_str":     as_at_str,
     }
 
 
@@ -1044,13 +1044,18 @@ elif good:
                         unsafe_allow_html=True
                     )
 
-                # Chart
+                # Chart — re-fetch data (DataFrames not stored in session state)
                 st.markdown('<div class="d-section-label" style="margin-top:8px;">技術分析圖表</div>', unsafe_allow_html=True)
                 with st.spinner("繪製圖表…"):
-                    fig = make_chart(r["train_feat"], pred,
-                                     pd.to_datetime(as_at_date), horizon, act_p)
-                    st.pyplot(fig, use_container_width=True)
-                    plt.close()
+                    try:
+                        _raw = load_data(sel, r["train_start"], r["as_at_str"])
+                        _feat = compute_features(_raw)
+                        _feat = _feat[_feat.index <= pd.to_datetime(r["as_at_str"])]
+                        fig = make_chart(_feat, pred, pd.to_datetime(as_at_date), horizon, act_p)
+                        st.pyplot(fig, use_container_width=True)
+                        plt.close()
+                    except Exception as _ce:
+                        st.warning(f"圖表載入失敗：{_ce}")
 
                 # Export CSV
                 st.markdown("<div style='margin-top:12px;'>", unsafe_allow_html=True)
