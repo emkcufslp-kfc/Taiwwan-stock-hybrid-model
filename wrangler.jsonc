@@ -6,7 +6,21 @@
     "enabled": true
   },
   "assets": {
-    "directory": "."
+    "directory": ".",
+    "not_found_handling": "single-page-application",
+    "exclude": [
+      ".git",
+      ".gitignore",
+      "__pycache__",
+      "*.py",
+      "*.yaml",
+      "*.bat",
+      "*.png",
+      "*.log",
+      "*.md",
+      "requirements.txt",
+      "data"
+    ]
   },
   "compatibility_flags": [
     "nodejs_compat"
