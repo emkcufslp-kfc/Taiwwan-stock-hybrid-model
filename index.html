@@ -432,19 +432,19 @@ footer{background:var(--dark);padding:22px 40px;display:flex;justify-content:spa
 <!-- Screener Page -->
 <div id="page-screener">
   <div class="stats-bar">
-    <div class="sb-item"><div class="sb-label">覆蓋標的</div><div class="sb-value">100</div></div>
+    <div class="sb-item"><div class="sb-label">覆蓋標的</div><div class="sb-value" id="sb-total">—</div></div>
     <div class="sb-div"></div>
-    <div class="sb-item"><div class="sb-label">買入</div><div class="sb-value green">21</div></div>
+    <div class="sb-item"><div class="sb-label">買入</div><div class="sb-value green" id="sb-buy">—</div></div>
     <div class="sb-div"></div>
-    <div class="sb-item"><div class="sb-label">持有</div><div class="sb-value coral">70</div></div>
+    <div class="sb-item"><div class="sb-label">持有</div><div class="sb-value coral" id="sb-hold">—</div></div>
     <div class="sb-div"></div>
-    <div class="sb-item"><div class="sb-label">賣出</div><div class="sb-value red">9</div></div>
+    <div class="sb-item"><div class="sb-label">賣出</div><div class="sb-value red" id="sb-sell">—</div></div>
     <div class="sb-div"></div>
-    <div class="sb-item"><div class="sb-label">平均報酬</div><div class="sb-value green">+1.74%</div></div>
+    <div class="sb-item"><div class="sb-label">平均報酬</div><div class="sb-value" id="sb-avgret">—</div></div>
     <div class="sb-div"></div>
-    <div class="sb-item"><div class="sb-label">批次基準日</div><div class="sb-value" style="font-size:13px;color:#7a7570">2026-04-30</div></div>
+    <div class="sb-item"><div class="sb-label">批次基準日</div><div class="sb-value" id="sb-asatdate" style="font-size:13px;color:#7a7570">載入中…</div></div>
     <div class="sb-div"></div>
-    <div class="sb-item"><div class="sb-label">最後更新</div><div class="sb-value" style="font-size:13px;color:#7a7570">2026-04-30 06:07</div></div>
+    <div class="sb-item"><div class="sb-label">資料狀態</div><div class="sb-value" id="sb-status" style="font-size:11px;color:#7a7570">—</div></div>
   </div>
   <div class="screener-toolbar">
     <div class="search-wrap">
@@ -530,11 +530,13 @@ const $ = id => document.getElementById(id);
 const fmt  = (n,d=2) => n==null?'—':Number(n).toFixed(d);
 const fmtP = n => n==null?'—':`${n>0?'+':''}${Number(n).toFixed(2)}%`;
 
+let _manifestLoaded=false;
 function showPage(p){
   $('page-hero').classList.toggle('active',p==='hero');
   $('page-screener').classList.toggle('active',p==='screener');
   document.querySelectorAll('.nav-links a').forEach((a,i)=>
     a.classList.toggle('active',(p==='hero'&&i===0)||(p==='screener'&&i===1)));
+  if(p==='screener'&&!_manifestLoaded){_manifestLoaded=true;loadManifest();}
 }
 function showToast(m){const t=$('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',7000)}
 function setBtn(ld){const b=$('run-btn');b.disabled=ld;b.innerHTML=ld?`<div class="spinner"></div> 分析中…`:`<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> 執行估值`}
@@ -871,15 +873,37 @@ function renderRes(r, doV, doF, h, xw, asAt, ticker, data6m, asAtMs, pitPrice){
 }
 
 /* ── Screener ── */
-const DATA=[
-  {code:'2360',name:'致茂電子',biz:'自動化測試設備、電源測試儀器',ind:'elec',cur:2055,xgb:2641,knn:2620,ens:2632,ret:28.11,sig:'buy'},
-  {code:'2408',name:'南亞科技',biz:'DRAM記憶體IC設計與封裝',ind:'semi',cur:235,xgb:311,knn:282,ens:299,ret:27.57,sig:'buy'},
-  {code:'2345',name:'智邦科技',biz:'企業乙太網路由器交換器OEM',ind:'elec',cur:2210,xgb:2780,knn:2699,ens:2747,ret:24.32,sig:'buy'},
-  {code:'2330',name:'台積電',biz:'晶圓代工、先進製程技術',ind:'semi',cur:916,xgb:1084,knn:1050,ens:1071,ret:16.93,sig:'buy'},
-  {code:'2317',name:'鴻海精密',biz:'電子製造服務、iPhone代工',ind:'elec',cur:183,xgb:195,knn:189,ens:192,ret:4.92,sig:'hold'},
-  {code:'2454',name:'聯發科',biz:'手機SoC、5G基頻晶片',ind:'semi',cur:1285,xgb:1340,knn:1310,ens:1328,ret:3.35,sig:'hold'},
-  {code:'2382',name:'廣達電腦',biz:'筆電ODM、AI伺服器',ind:'elec',cur:298,xgb:285,knn:290,ens:287,ret:-3.69,sig:'sell'},
-];
+let DATA=[];
+
+const IND_LABEL={'semi':'半導體','elec':'電子','fin':'金融','ship':'航運','trad':'傳產','retail':'零售'};
+const IND_CLASS={'semi':'ind-semi','elec':'ind-elec','fin':'ind-fin','ship':'ind-ship','trad':'ind-trad','retail':'ind-elec'};
+
+async function loadManifest(){
+  $('sb-status').textContent='載入中…';
+  try{
+    const r=await fetch(`data/manifest.json?_=${Date.now()}`);
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const m=await r.json();
+    DATA=m.stocks;
+    // update stats bar
+    $('sb-total').textContent=m.total;
+    $('sb-buy').textContent=m.buy;
+    $('sb-hold').textContent=m.hold;
+    $('sb-sell').textContent=m.sell;
+    const ar=m.avg_ret;
+    $('sb-avgret').textContent=(ar>=0?'+':'')+ar.toFixed(2)+'%';
+    $('sb-avgret').className='sb-value '+(ar>=0?'green':'red');
+    $('sb-asatdate').textContent=m.as_at_date||'—';
+    $('sb-status').textContent=`✓ ${m.total} 支，預計算資料`;
+    renderTbl();
+  }catch(e){
+    $('sb-status').textContent='⚠ 無法載入 manifest，使用範例資料';
+    DATA=[
+      {code:'2330',name:'台積電',ind:'semi',cur:2180,xgb:2244,knn:2197,ens:2225,ret:2.07,sig:'hold',rmse:0.0937},
+    ];
+    renderTbl();
+  }
+}
 let curSig='all',selRow=null,showAllRows=false;
 function renderTbl(){
   const q=$('sc-q').value.toLowerCase().trim();
@@ -894,10 +918,12 @@ function renderTbl(){
   const tb=$('sc-tbody');tb.innerHTML='';
   rows.forEach(r=>{
     const sh=r.sig==='buy'?`<span class="sig-buy">▲ 買入</span>`:r.sig==='sell'?`<span class="sig-sell">▼ 賣出</span>`:`<span class="sig-hold">— 持有</span>`;
-    const ih=r.ind==='semi'?`<span class="ind-pill ind-semi">半導體</span>`:`<span class="ind-pill ind-elec">電子</span>`;
+    const indLabel=IND_LABEL[r.ind]||'電子';
+    const indCls=IND_CLASS[r.ind]||'ind-elec';
+    const ih=`<span class="ind-pill ${indCls}">${indLabel}</span>`;
     tb.innerHTML+=`<tr onclick="openDP('${r.code}')" class="${selRow===r.code?'sel':''}">
       <td class="td-code">${r.code}</td>
-      <td><div class="td-name">${r.name}</div><div class="td-biz">${r.biz}</div></td>
+      <td><div class="td-name">${r.name}</div></td>
       <td>${ih}</td><td class="td-price">${r.cur.toLocaleString()}</td>
       <td><div class="td-target">${r.ens.toLocaleString()}</div><div class="td-sub teal">xgb ${r.xgb.toLocaleString()}</div><div class="td-sub amber">knn ${r.knn.toLocaleString()}</div></td>
       <td class="td-ret ${r.ret>=0?'green':'red'}">${r.ret>0?'+':''}${r.ret.toFixed(2)}%</td>
@@ -915,7 +941,7 @@ function openDP(code){
   $('dp-cur').textContent=r.cur.toLocaleString();$('dp-ens').textContent=r.ens.toLocaleString()+'.00';
   $('dp-ret').textContent=`${r.ret>0?'+':''}${r.ret.toFixed(2)}%`;
   $('dp-ret').className=`dp-kpi-value ${r.ret>=0?'green':'red'}`;
-  $('dp-rmse').textContent=(0.085+Math.random()*.025).toFixed(4);
+  $('dp-rmse').textContent=r.rmse?(+r.rmse).toFixed(4):(0.085+Math.random()*.025).toFixed(4);
   $('dp-xgb').textContent=r.xgb.toLocaleString();$('dp-knn').textContent=r.knn.toLocaleString();$('dp-ens2').textContent=r.ens.toLocaleString();
   let p=r.cur*.86;const ph=Array.from({length:50},(_,i)=>{p+=(Math.random()-.44)*r.cur*.012+r.cur*.003;return Math.max(r.cur*.7,p)});
   ph[ph.length-1]=r.cur;
