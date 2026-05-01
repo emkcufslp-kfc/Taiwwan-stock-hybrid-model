@@ -1,0 +1,8 @@
+{
+  "name": "taiwwan-stock-hybrid-model",
+  "version": "1.0.0",
+  "description": "TWSE Ensemble Valuation - Static Frontend",
+  "scripts": {
+    "build": "echo 'Static site - no build required'"
+  }
+}
