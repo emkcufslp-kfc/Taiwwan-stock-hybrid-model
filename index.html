@@ -216,7 +216,7 @@ input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;hei
 .dp-kpi-label{font-size:10px;color:var(--ink2);font-weight:500}
 .dp-kpi-value{font-family:var(--mono);font-size:16px;font-weight:500;color:var(--text)}
 .dp-kpi-value.coral{color:var(--coral)} .dp-kpi-value.green{color:var(--green)} .dp-kpi-value.red{color:var(--red)}
-.dp-chart-outer{background:var(--dark);margin:12px 20px;border-radius:8px;overflow:hidden;height:110px;position:relative}
+.dp-chart-outer{background:var(--dark);margin:12px 20px;border-radius:8px;overflow:hidden;height:124px;position:relative}
 .dp-chart-label{position:absolute;top:8px;left:10px;font-size:9px;font-weight:500;color:#4a4840;z-index:1}
 .dp-breakdown{padding:12px 20px}
 .dp-br-label{font-size:10px;font-weight:500;color:var(--ink2);margin-bottom:10px}
@@ -497,15 +497,31 @@ footer{background:var(--dark);padding:22px 40px;display:flex;justify-content:spa
         </div>
         <div style="padding:0 20px 10px">
           <div class="dp-chart-outer">
-            <div class="dp-chart-label">近一年走勢 + T+20 預測</div>
-            <canvas id="dp-canvas" width="316" height="110"></canvas>
+            <div class="dp-chart-label">近一年走勢 · 真實日線 + T+20 預測</div>
+            <canvas id="dp-canvas" width="316" height="124"></canvas>
           </div>
         </div>
         <div class="dp-breakdown">
           <div class="dp-br-label">模型拆解</div>
-          <div class="dp-br-row"><span class="dp-br-name">XGBoost 60%</span><span class="dp-br-val" id="dp-xgb">—</span></div>
-          <div class="dp-br-row"><span class="dp-br-name">KNN 40%</span><span class="dp-br-val" id="dp-knn">—</span></div>
-          <div class="dp-br-row dp-divider"><span class="dp-br-name" style="font-weight:500">集成</span><span class="dp-br-val coral" id="dp-ens2">—</span></div>
+          <div class="dp-br-row">
+            <span class="dp-br-name">XGBoost 目標</span>
+            <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px">
+              <span class="dp-br-val" id="dp-xgb">—</span>
+              <span style="font-size:10px;color:var(--teal);font-family:var(--mono)" id="dp-xgb-ret"></span>
+            </span>
+          </div>
+          <div class="dp-br-row">
+            <span class="dp-br-name">KNN 目標</span>
+            <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px">
+              <span class="dp-br-val" id="dp-knn">—</span>
+              <span style="font-size:10px;color:var(--amber);font-family:var(--mono)" id="dp-knn-ret"></span>
+            </span>
+          </div>
+          <div class="dp-br-row dp-divider"><span class="dp-br-name" style="font-weight:500">集成目標</span><span class="dp-br-val coral" id="dp-ens2">—</span></div>
+          <div id="dp-folds" style="display:none;margin-top:10px">
+            <div class="dp-br-label" style="border-top:1px solid var(--hair);padding-top:8px;margin-top:4px">CV RMSE 各折</div>
+            <div id="dp-fold-row" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -834,11 +850,12 @@ function renderRes(r, doV, doF, h, xw, asAt, ticker, data6m, asAtMs, pitPrice){
   (r.fold_rmse||[]).forEach((v,i)=>fg.innerHTML+=`<div class="fold-card"><div class="fold-label">第 ${i+1} 折</div><div class="fold-val">${fmt(v,4)}</div></div>`);
 
   if(doF&&r.features){
-    const desc={ret_5d:'5 日動能報酬',ret_20d:'20 日動能報酬',ret_60d:'60 日動能報酬',ma5_ratio:'收盤/MA5',ma20_ratio:'收盤/MA20',ma60_ratio:'收盤/MA60',vol_20d:'20 日波動率',vol_60d:'60 日波動率',vol_ratio:'成交量比率',rsi14:'RSI 14 期',bb_pos:'布林通道位置'};
+    const desc={ret_5d:'5 日動能報酬',ret_20d:'20 日動能報酬',ret_60d:'60 日動能報酬',ma5_ratio:'收盤 / MA5',ma20_ratio:'收盤 / MA20',ma60_ratio:'收盤 / MA60',vol_20d:'20 日歷史波動率',vol_60d:'60 日歷史波動率',vol_ratio:'成交量比率（相對 MA20）',rsi14:'RSI 14 期',bb_pos:'布林通道相對位置'};
+    const descShort={ret_5d:'5日動能',ret_20d:'20日動能',ret_60d:'60日動能',ma5_ratio:'MA5比值',ma20_ratio:'MA20比值',ma60_ratio:'MA60比值',vol_20d:'20日波動',vol_60d:'60日波動',vol_ratio:'量能比率',rsi14:'RSI 14',bb_pos:'布林位置'};
     const tb=$('feat-tbody'); tb.innerHTML='';
     Object.entries(r.features).forEach(([k,v])=>{
       const pct=['ret_5d','ret_20d','ret_60d','vol_20d','vol_60d'].includes(k);
-      tb.innerHTML+=`<tr><td>${k}</td><td>${pct?(v*100).toFixed(2)+'%':fmt(v,4)}</td><td style="color:var(--ink2)">${desc[k]||''}</td></tr>`;
+      tb.innerHTML+=`<tr><td style="font-weight:500;color:var(--ink)">${descShort[k]||k}</td><td>${pct?(v*100).toFixed(2)+'%':fmt(v,4)}</td><td style="color:var(--ink2)">${desc[k]||''}</td></tr>`;
     });
     $('feat-wrap').style.display='';
   }
@@ -935,37 +952,139 @@ function renderTbl(){
       <td class="td-code">${r.code}</td>
       <td><div class="td-name">${r.name}</div></td>
       <td>${ih}</td><td class="td-price">${r.cur.toLocaleString()}</td>
-      <td><div class="td-target">${r.ens.toLocaleString()}</div><div class="td-sub teal">xgb ${r.xgb.toLocaleString()}</div><div class="td-sub amber">knn ${r.knn.toLocaleString()}</div></td>
+      <td><div class="td-target">${r.ens.toLocaleString()}</div><div class="td-sub teal">XGB ${r.xgb.toLocaleString()}</div><div class="td-sub amber">KNN ${r.knn.toLocaleString()}</div></td>
       <td class="td-ret ${r.ret>=0?'green':'red'}">${r.ret>0?'+':''}${r.ret.toFixed(2)}%</td>
       <td>${sh}</td></tr>`;
   });
 }
 function setSig(s,el){curSig=s;document.querySelectorAll('.stab:not(.stab-right)').forEach(t=>t.classList.remove('active'));el.classList.add('active');renderTbl()}
 function toggleAll(){showAllRows=!showAllRows;renderTbl()}
-function openDP(code){
-  selRow=code;renderTbl();
-  const r=DATA.find(x=>x.code===code);if(!r)return;
-  $('dp-e').style.display='none';$('dp-c').style.display='block';
-  $('dp-ticker').textContent=`${r.code}.TW`;$('dp-name').textContent=r.name;
+/* ── 繪製個股詳情走勢圖（使用真實日線資料）── */
+function drawDpChart(cv, closes, dates, ensPrice){
+  const W=316,H=124; cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const PAD_L=6,PAD_R=48,PAD_T=10,PAD_B=22;
+  const plotW=W-PAD_L-PAD_R, plotH=H-PAD_T-PAD_B;
+  const allV=[...closes]; if(ensPrice) allV.push(ensPrice);
+  const mn=Math.min(...allV)*.993, mx=Math.max(...allV)*1.007, rng=mx-mn||1;
+  const py=v=>PAD_T+plotH-(v-mn)/rng*plotH;
+  const n=closes.length;
+  const px=i=>PAD_L+(n>1?i/(n-1):0)*plotW;
+  /* 面積填充 */
+  const g=ctx.createLinearGradient(0,PAD_T,0,H-PAD_B);
+  g.addColorStop(0,'rgba(90,171,152,.32)'); g.addColorStop(1,'rgba(90,171,152,0)');
+  ctx.beginPath();
+  closes.forEach((c,i)=>i===0?ctx.moveTo(px(i),py(c)):ctx.lineTo(px(i),py(c)));
+  ctx.lineTo(px(n-1),H-PAD_B); ctx.lineTo(PAD_L,H-PAD_B); ctx.closePath();
+  ctx.fillStyle=g; ctx.fill();
+  /* 價格折線 */
+  ctx.beginPath(); ctx.strokeStyle='#5aab98'; ctx.lineWidth=1.6;
+  closes.forEach((c,i)=>i===0?ctx.moveTo(px(i),py(c)):ctx.lineTo(px(i),py(c)));
+  ctx.stroke();
+  /* 最新收盤點 */
+  ctx.beginPath(); ctx.arc(px(n-1),py(closes[n-1]),3.5,0,Math.PI*2);
+  ctx.fillStyle='#5aab98'; ctx.fill();
+  /* 目標價箭頭 */
+  if(ensPrice!=null){
+    const predX=W-PAD_R+12, predY=py(ensPrice);
+    ctx.beginPath(); ctx.strokeStyle='rgba(78,154,92,.65)'; ctx.lineWidth=1.2; ctx.setLineDash([3,3]);
+    ctx.moveTo(px(n-1),py(closes[n-1])); ctx.lineTo(predX,predY); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(predX,predY,4,0,Math.PI*2); ctx.fillStyle='#4e9a5c'; ctx.fill();
+    ctx.fillStyle='#4e9a5c'; ctx.font='bold 9px JetBrains Mono,monospace'; ctx.textAlign='left';
+    ctx.fillText(Math.round(ensPrice), predX+7, predY+3);
+  }
+  /* X 軸日期標籤（首、中、末） */
+  if(dates&&dates.length>1){
+    ctx.fillStyle='#5a5850'; ctx.font='9px JetBrains Mono,monospace';
+    const fmt3=s=>(s||'').slice(5);
+    ctx.textAlign='left';  ctx.fillText(fmt3(dates[0]),           PAD_L,   H-5);
+    ctx.textAlign='center';ctx.fillText(fmt3(dates[Math.floor(n/2)]), PAD_L+plotW/2, H-5);
+    ctx.textAlign='right'; ctx.fillText(fmt3(dates[n-1]),          W-PAD_R-2, H-5);
+  }
+}
+function drawDpChartFallback(cv, cur, ens){
+  /* 當個股 JSON 無法取得時，以合理隨機走勢代替（明確標示為估算） */
+  let p=cur*.88;
+  const ph=Array.from({length:60},()=>{
+    p+=(Math.random()-.44)*cur*.011+cur*.002;
+    return Math.max(cur*.74,p);
+  });
+  ph[ph.length-1]=cur;
+  drawDpChart(cv, ph, null, ens);
+  /* 在圖上標示「估算走勢」 */
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='rgba(90,88,80,.75)'; ctx.font='9px Noto Sans TC,sans-serif'; ctx.textAlign='right';
+  ctx.fillText('（估算走勢）', cv.width-50, 20);
+}
+
+/* ── 個股詳情面板（點擊列觸發）── */
+async function openDP(code){
+  selRow=code; renderTbl();
+  const r=DATA.find(x=>x.code===code); if(!r) return;
+  /* 先以 manifest 資料即時顯示，不等 JSON */
+  $('dp-e').style.display='none'; $('dp-c').style.display='block';
+  $('dp-ticker').textContent=`${r.code}.TW`; $('dp-name').textContent=r.name;
   $('dp-meta').textContent=`估值結果 · 基準日 ${r.as_at||$('sc-date').value} · T+20`;
-  $('dp-cur').textContent=r.cur.toLocaleString();$('dp-ens').textContent=r.ens.toLocaleString()+'.00';
+  $('dp-cur').textContent=r.cur.toLocaleString();
+  $('dp-ens').textContent=r.ens.toLocaleString();
   $('dp-ret').textContent=`${r.ret>0?'+':''}${r.ret.toFixed(2)}%`;
   $('dp-ret').className=`dp-kpi-value ${r.ret>=0?'green':'red'}`;
-  $('dp-rmse').textContent=r.rmse?(+r.rmse).toFixed(4):(0.085+Math.random()*.025).toFixed(4);
-  $('dp-xgb').textContent=r.xgb.toLocaleString();$('dp-knn').textContent=r.knn.toLocaleString();$('dp-ens2').textContent=r.ens.toLocaleString();
-  let p=r.cur*.86;const ph=Array.from({length:50},(_,i)=>{p+=(Math.random()-.44)*r.cur*.012+r.cur*.003;return Math.max(r.cur*.7,p)});
-  ph[ph.length-1]=r.cur;
-  setTimeout(()=>{const cv=$('dp-canvas');const W=316,H=110;cv.width=W;cv.height=H;
-    const ctx=cv.getContext('2d');const mn=Math.min(...ph)*.995,mx=Math.max(...ph,r.ens)*1.005;
-    const py=v=>H-((v-mn)/(mx-mn))*(H*.82)-H*.09;const px=i=>(i/(ph.length+1))*W;
-    const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'rgba(90,171,152,.3)');g.addColorStop(1,'rgba(90,171,152,0)');
-    ctx.beginPath();ph.forEach((p,i)=>i===0?ctx.moveTo(px(i),py(p)):ctx.lineTo(px(i),py(p)));
-    ctx.lineTo(px(ph.length-1),H);ctx.lineTo(0,H);ctx.closePath();ctx.fillStyle=g;ctx.fill();
-    ctx.beginPath();ctx.strokeStyle='#5aab98';ctx.lineWidth=1.5;ph.forEach((p,i)=>i===0?ctx.moveTo(px(i),py(p)):ctx.lineTo(px(i),py(p)));ctx.stroke();
-    ctx.beginPath();ctx.strokeStyle='rgba(201,122,94,.7)';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.moveTo(px(ph.length-1),0);ctx.lineTo(px(ph.length-1),H);ctx.stroke();ctx.setLineDash([]);
-    ctx.beginPath();ctx.strokeStyle='#4e9a5c';ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.moveTo(px(ph.length-1),py(r.cur));ctx.lineTo(px(ph.length+0.8),py(r.ens));ctx.stroke();ctx.setLineDash([]);
-    ctx.beginPath();ctx.arc(px(ph.length+0.8),py(r.ens),4,0,Math.PI*2);ctx.fillStyle='#4e9a5c';ctx.fill();
-  },20);
+  $('dp-rmse').textContent=r.rmse?(+r.rmse).toFixed(4):'—';
+  $('dp-xgb').textContent=r.xgb.toLocaleString(); $('dp-xgb-ret').textContent='';
+  $('dp-knn').textContent=r.knn.toLocaleString(); $('dp-knn-ret').textContent='';
+  $('dp-ens2').textContent=r.ens.toLocaleString();
+  /* 清空折疊 RMSE */
+  const foldRow=$('dp-fold-row'); if(foldRow) foldRow.innerHTML='';
+  const foldBox=$('dp-folds');   if(foldBox) foldBox.style.display='none';
+  /* 走勢圖：先顯示「載入中」 */
+  const cv=$('dp-canvas'); const ctxL=cv.getContext('2d');
+  cv.width=316; cv.height=124;
+  ctxL.clearRect(0,0,316,124);
+  ctxL.fillStyle='#3a3830'; ctxL.fillRect(0,0,316,124);
+  ctxL.fillStyle='#5a5850'; ctxL.font='11px Noto Sans TC,sans-serif'; ctxL.textAlign='center';
+  ctxL.fillText('載入真實日線資料…', 158, 66);
+  /* 取得個股詳細 JSON（含真實 chart_data） */
+  try{
+    const resp=await fetch(`data/stock_detail/${code}_TW.json?_t=${Date.now()}`);
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const det=await resp.json();
+    const cd=det.chart_data;
+    /* 以精確資料覆蓋 manifest 摘要 */
+    if(det.xgb_price!=null){
+      $('dp-xgb').textContent=det.xgb_price.toLocaleString();
+      if(det.xgb_ret_pct!=null)
+        $('dp-xgb-ret').textContent=`${det.xgb_ret_pct>0?'+':''}${det.xgb_ret_pct.toFixed(2)}%`;
+    }
+    if(det.knn_price!=null){
+      $('dp-knn').textContent=det.knn_price.toLocaleString();
+      if(det.knn_ret_pct!=null)
+        $('dp-knn-ret').textContent=`${det.knn_ret_pct>0?'+':''}${det.knn_ret_pct.toFixed(2)}%`;
+    }
+    if(det.ens_price!=null){
+      $('dp-ens').textContent=det.ens_price.toLocaleString();
+      $('dp-ens2').textContent=det.ens_price.toLocaleString();
+    }
+    if(det.cv_rmse_mean!=null) $('dp-rmse').textContent=(+det.cv_rmse_mean).toFixed(4);
+    /* CV 各折 RMSE */
+    if(det.fold_rmse&&det.fold_rmse.length&&foldRow&&foldBox){
+      det.fold_rmse.forEach((v,i)=>{
+        const d=document.createElement('div');
+        d.style.cssText='background:var(--dark2);border-radius:4px;padding:3px 7px;font-size:10px;font-family:var(--mono);color:#8a8780;flex:1;text-align:center;min-width:44px';
+        d.innerHTML=`<div style="font-size:8px;color:#4a4840;margin-bottom:2px">第${i+1}折</div>${(+v).toFixed(4)}`;
+        foldRow.appendChild(d);
+      });
+      foldBox.style.display='block';
+    }
+    /* 繪製真實走勢圖 */
+    if(cd&&cd.close&&cd.close.length>5){
+      drawDpChart(cv, cd.close, cd.dates, det.ens_price??r.ens);
+    } else {
+      drawDpChartFallback(cv, r.cur, det.ens_price??r.ens);
+    }
+  }catch(e){
+    drawDpChartFallback(cv, r.cur, r.ens);
+  }
 }
 function closeDP(){selRow=null;$('dp-e').style.display='flex';$('dp-c').style.display='none';renderTbl()}
 function handleCSV(e){const f=e.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=ev=>{const l=ev.target.result.split('\n').filter(Boolean);showToast(`CSV 已載入 ${l.length} 個代碼`)};rd.readAsText(f)}

@@ -159,14 +159,9 @@ stock_detail/*.json:
 
 ## Next Tasks
 
-1. **[ ] Fix Cloudflare data serving** — remove `"data"` from `exclude` list in `wrangler.jsonc` so `data/manifest.json` and `data/stock_detail/*.json` are served on the live URL. Without this, the screener works locally but shows fallback data (1 stock) on Cloudflare.
+1. **[x] Fix Cloudflare data serving** — DONE 2026-05-02. Removed `"data"` from exclude in `wrangler.jsonc`. All 100 stocks now served on Cloudflare.
 
-2. **[ ] Commit and push today's fixes** — the two `index.html` fixes and this `working.md` are not yet committed:
-   ```powershell
-   git add index.html working.md
-   git commit -m "fix: as_at_date consistency + add working.md handoff"
-   git push origin main
-   ```
+2. **[x] Commit and push** — DONE 2026-05-02. Commit `2f2c323` pushed to main, Cloudflare auto-deployed. Live at https://taiwwan-stock-hybrid-model-2.emkcufslp.workers.dev/
 
 3. **[ ] Refresh pre-computed data** — `data/` is as at 2026-04-30. When you want fresh data, re-run the batch valuation pipeline (Python, see `strategy.py`) and regenerate `manifest.json` + `stock_detail/*.json`, then commit the new `data/` folder.
 
