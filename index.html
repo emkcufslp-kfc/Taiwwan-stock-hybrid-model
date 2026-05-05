@@ -225,6 +225,15 @@ input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;hei
 .dp-br-val{font-family:var(--mono);font-size:13px;font-weight:500}
 .dp-br-val.coral{color:var(--coral)}
 .dp-divider{border-top:1px solid var(--hair);padding-top:7px;margin-top:3px}
+.dp-src-wrap{display:flex;justify-content:space-between;align-items:center;padding:8px 20px 12px;border-bottom:1px solid var(--hair)}
+.dp-src-meta{font-size:11px;color:var(--ink2)}
+.dp-badge-pre{font-size:9px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--card);color:var(--ink2);border:1px solid var(--hair);white-space:nowrap;flex-shrink:0}
+.dp-badge-live{font-size:9px;font-weight:600;padding:2px 8px;border-radius:99px;background:rgba(78,154,92,.15);color:var(--green);border:1px solid rgba(78,154,92,.35);white-space:nowrap;flex-shrink:0}
+.dp-badge-loading{font-size:9px;font-weight:600;padding:2px 8px;border-radius:99px;background:rgba(201,122,94,.12);color:var(--coral);border:1px solid rgba(201,122,94,.3);white-space:nowrap;flex-shrink:0}
+.dp-badge-err{font-size:9px;font-weight:600;padding:2px 8px;border-radius:99px;background:var(--red-bg);color:var(--red);border:1px solid rgba(194,64,64,.3);white-space:nowrap;flex-shrink:0}
+.btn-dp-reval{width:100%;margin-top:14px;padding:9px 0;background:var(--parchment);border:1px solid var(--hair);border-radius:7px;color:var(--ink);font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:background .15s,border-color .15s}
+.btn-dp-reval:hover{background:var(--card);border-color:var(--coral)}
+.btn-dp-reval:disabled{color:var(--muted);cursor:not-allowed;background:var(--cream);border-color:var(--hair)}
 
 .toast{position:fixed;bottom:24px;right:24px;background:#2a1a1a;border:1px solid var(--red);border-radius:10px;padding:12px 17px;color:#f5c6c6;font-size:12px;max-width:340px;z-index:999;display:none;animation:fadeUp .3s ease}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -488,7 +497,10 @@ footer{background:var(--dark);padding:22px 40px;display:flex;justify-content:spa
           <div><div class="dp-ticker" id="dp-ticker">—</div><div class="dp-name" id="dp-name">—</div></div>
           <button class="dp-close-btn" onclick="closeDP()">✕</button>
         </div>
-        <div class="dp-meta" id="dp-meta">估值結果 · 基準日 — · T+20</div>
+        <div class="dp-src-wrap">
+          <span id="dp-meta" class="dp-src-meta">估值結果 · 基準日 — · T+20</span>
+          <span id="dp-src-badge" class="dp-badge-pre">預計算</span>
+        </div>
         <div class="dp-kpis">
           <div class="dp-kpi"><div class="dp-kpi-label">現價</div><div class="dp-kpi-value" id="dp-cur">—</div></div>
           <div class="dp-kpi"><div class="dp-kpi-label">集成目標價</div><div class="dp-kpi-value coral" id="dp-ens">—</div></div>
@@ -522,6 +534,10 @@ footer{background:var(--dark);padding:22px 40px;display:flex;justify-content:spa
             <div class="dp-br-label" style="border-top:1px solid var(--hair);padding-top:8px;margin-top:4px">CV RMSE 各折</div>
             <div id="dp-fold-row" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px"></div>
           </div>
+          <button class="btn-dp-reval" id="dp-reval-btn" onclick="revalDP(selRow)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6"/><path d="M2.5 12C2.5 6.5 7 2.5 12 2.5a9.5 9.5 0 0 1 7.95 4.3L21.5 8"/><path d="M2.5 22v-6h6"/><path d="M21.5 12C21.5 17.5 17 21.5 12 21.5a9.5 9.5 0 0 1-7.95-4.3L2.5 16"/></svg>
+            重新估值（Groq AI）
+          </button>
         </div>
       </div>
     </div>
@@ -589,6 +605,81 @@ async function fetchYahooRaw(ticker, range='1y'){
     }catch(e){/* try next */}
   }
   return null; // all proxies failed
+}
+
+/* ── Fallback 1：FinMind 免費 REST API（台灣日 K，無需金鑰）──
+   文件：https://finmind.github.io/
+   免費：300 次/小時；加 token 後 600 次/小時
+   回傳欄位：date, open, max, min, close, Trading_Volume ── */
+async function fetchFinMind(ticker, startDate, endDate){
+  const code=ticker.replace(/\.TWO?$/i,'').replace(/\.TW$/i,'');
+  const url=`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${encodeURIComponent(code)}&start_date=${startDate}&end_date=${endDate}`;
+  try{
+    const r=await fetch(url,{signal:AbortSignal.timeout(12000)});
+    if(!r.ok) return null;
+    const d=await r.json();
+    if(d.status!==200||!Array.isArray(d.data)||d.data.length===0) return null;
+    return d.data
+      .map(row=>({t:new Date(row.date).getTime(),c:parseFloat(row.close),o:parseFloat(row.open),h:parseFloat(row.max),l:parseFloat(row.min),v:parseFloat(row.Trading_Volume)}))
+      .filter(p=>!isNaN(p.c)&&p.c>0)
+      .sort((a,b)=>a.t-b.t);
+  }catch(e){return null;}
+}
+
+/* ── Fallback 2：TWSE 官方 OpenAPI（無需金鑰，單月一次，拼接多月）──
+   文件：https://openapi.twse.com.tw/
+   限制：每月一次請求，民國年格式
+   適合：FinMind 也失效時的最後保底 ── */
+async function fetchTWSE(ticker, startDate, endDate){
+  const code=ticker.replace(/\.TWO?$/i,'').replace(/\.TW$/i,'');
+  const start=new Date(startDate), end=new Date(endDate);
+  const pairs=[];
+  const cur=new Date(start.getFullYear(),start.getMonth(),1);
+  while(cur<=end){
+    const yyyymm=`${cur.getFullYear()}${String(cur.getMonth()+1).padStart(2,'0')}01`;
+    try{
+      const url=`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${yyyymm}&stockNo=${code}`;
+      const r=await fetch(url,{signal:AbortSignal.timeout(8000)});
+      if(r.ok){
+        const d=await r.json();
+        if(d.stat==='OK'&&Array.isArray(d.data)){
+          for(const row of d.data){
+            /* 欄位：日期(民國), 成交股數, 成交金額, 開盤, 最高, 最低, 收盤, 漲跌, 筆數 */
+            const parts=row[0].split('/');
+            if(parts.length<3) continue;
+            const yyyy=parseInt(parts[0])+1911;
+            const dateStr=`${yyyy}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`;
+            const close=parseFloat(row[6].replace(/,/g,''));
+            if(!isNaN(close)&&close>0) pairs.push({t:new Date(dateStr).getTime(),c:close});
+          }
+        }
+      }
+    }catch(e){/* 繼續下一月 */}
+    cur.setMonth(cur.getMonth()+1);
+    await new Promise(res=>setTimeout(res,350)); /* 避免打太快 */
+  }
+  if(pairs.length===0) return null;
+  return pairs.filter(p=>p.t>=start.getTime()&&p.t<=end.getTime()+86400000).sort((a,b)=>a.t-b.t);
+}
+
+/* ── 三段式行情獲取（Yahoo → FinMind → TWSE）── */
+async function fetchPriceData(ticker, startDate, endDate){
+  const days=Math.round((new Date(endDate)-new Date(startDate))/86400000);
+  const range=days<=365?'1y':days<=730?'2y':days<=1825?'5y':'10y';
+  /* 1. Yahoo Finance（三個 CORS 代理） */
+  let raw=await fetchYahooRaw(ticker,range);
+  if(raw&&raw.length>10){
+    const s=new Date(startDate).getTime(),e=new Date(endDate).getTime()+86400000;
+    const sliced=raw.filter(p=>p.t>=s&&p.t<=e);
+    return {data:sliced.length>10?sliced:raw,source:'Yahoo Finance'};
+  }
+  /* 2. FinMind */
+  raw=await fetchFinMind(ticker,startDate,endDate);
+  if(raw&&raw.length>10) return {data:raw,source:'FinMind'};
+  /* 3. TWSE 官方 OpenAPI（逐月，較慢） */
+  raw=await fetchTWSE(ticker,startDate,endDate);
+  if(raw&&raw.length>5) return {data:raw,source:'TWSE OpenAPI'};
+  return null;
 }
 
 /* Find the closing price on or before a given timestamp */
@@ -707,7 +798,9 @@ function paintSnap(prices){
 
 /* ── Main valuation ── */
 async function runVal(){
-  const ticker=$('c-ticker').value.trim()||'2330.TW';
+  let ticker=$('c-ticker').value.trim()||'2330.TW';
+  // 自動補上 .TW 後綴（台股四∼五位數代碼直接輸入時）
+  if(/^\d{4,5}$/.test(ticker)){ticker=ticker+'.TW';$('c-ticker').value=ticker;}
   const asAt=$('c-date').value;
   const h=parseInt($('c-h').value);
   const y=parseInt($('c-y').value);
@@ -730,16 +823,18 @@ async function runVal(){
 
   log(`${ticker} · 基準日 ${asAt} · T+${h}`,'hi');
 
-  // ── Step 1: Fetch REAL historical price data ──
-  log('獲取真實歷史行情（Yahoo Finance）…');
+  // ── Step 1: 三段式行情獲取（Yahoo Finance → FinMind → TWSE OpenAPI）──
+  log('獲取真實歷史行情（Yahoo Finance → FinMind → TWSE 官方 API）…');
   const asAtMs = new Date(asAt).getTime();
-  // Fetch training range: y years before asAt + enough future for validation
-  const trainRange = `${Math.min(y+1,10)}y`;
-  let allData = null, pitPrice = null, data6m = null;
+  const startDate = new Date(asAtMs - y*365.25*24*60*60*1000).toISOString().slice(0,10);
+  const endDate   = new Date(asAtMs + 45*24*60*60*1000).toISOString().slice(0,10);
+  let allData = null, pitPrice = null, data6m = null, priceSource = '—';
 
   try{
-    allData = await fetchYahooRaw(ticker, trainRange);
-    if(!allData||allData.length===0) throw new Error('無法取得行情資料');
+    const result = await fetchPriceData(ticker, startDate, endDate);
+    if(!result||result.data.length===0) throw new Error('三個資料來源均無法取得行情');
+    allData = result.data;
+    priceSource = result.source;
 
     // Find exact price on or before As At Date (strict PIT)
     const pitBar = priceAtOrBefore(allData, asAtMs);
@@ -751,7 +846,7 @@ async function runVal(){
     data6m = allData.filter(p => p.t >= sixMonthMs && p.t <= asAtMs);
     if(data6m.length < 10) data6m = allData.filter(p => p.t <= asAtMs).slice(-130);
 
-    log(`✓ 基準日收盤價（實際）：${pitPrice} TWD，共 ${data6m.length} 根日線（約 6 個月）`,'ok');
+    log(`✓ 資料來源：${priceSource} · 基準日收盤：${pitPrice} TWD · ${data6m.length} 根日線`,'ok');
   }catch(e){
     log(`行情獲取失敗：${e.message}`,'err');
     showToast(`❌ 行情獲取失敗：${e.message}\n請確認股票代碼格式，例：2330.TW`);
@@ -759,11 +854,11 @@ async function runVal(){
   }
 
   // ── Step 2: AI model inference (anchored to real PIT price) ──
-  log('呼叫 AI 集成模型（基於真實基準日收盤價）…');
+  log(`呼叫 AI 集成模型（基於 ${priceSource} 真實基準日收盤價）…`);
   const sysP=`你是一位台灣股市量化分析師。回傳純 JSON，不加任何說明或 markdown。格式：
 {"ticker":string,"as_at_date":string,"horizon_days":number,"current_price":number,"xgb_target":number,"knn_target":number,"ensemble_target":number,"expected_ret_pct":number,"xgb_weight":number,"knn_weight":number,"cv_rmse_avg":number,"fold_rmse":[number,number,number,number,number],"training_rows":number,"features":{"ret_5d":number,"ret_20d":number,"ret_60d":number,"ma5_ratio":number,"ma20_ratio":number,"ma60_ratio":number,"vol_20d":number,"vol_60d":number,"vol_ratio":number,"rsi14":number,"bb_pos":number},"validation":{"actual_price":number,"abs_error":number,"error_pct":number,"verdict":string}|null,"signal":"BUY"|"HOLD"|"SELL","signal_reason":string}
 嚴格規則：
-1. current_price 必須精確等於 ${pitPrice}（來自 Yahoo Finance 真實資料）
+1. current_price 必須精確等於 ${pitPrice}（來自 ${priceSource} 真實資料）
 2. ensemble_target = ${xw}×xgb_target + ${(1-xw).toFixed(2)}×knn_target（精確計算）
 3. expected_ret_pct = (ensemble_target/${pitPrice}-1)×100
 4. signal = BUY 若 expected_ret_pct>${thr}，SELL 若 <-${thr}，否則 HOLD
@@ -1026,6 +1121,8 @@ async function openDP(code){
   $('dp-e').style.display='none'; $('dp-c').style.display='block';
   $('dp-ticker').textContent=`${r.code}.TW`; $('dp-name').textContent=r.name;
   $('dp-meta').textContent=`估值結果 · 基準日 ${r.as_at||$('sc-date').value} · T+20`;
+  const badge=$('dp-src-badge');if(badge){badge.className='dp-badge-pre';badge.textContent='預計算';}
+  const revalBtn=$('dp-reval-btn');if(revalBtn)revalBtn.disabled=false;
   $('dp-cur').textContent=r.cur.toLocaleString();
   $('dp-ens').textContent=r.ens.toLocaleString();
   $('dp-ret').textContent=`${r.ret>0?'+':''}${r.ret.toFixed(2)}%`;
@@ -1086,6 +1183,125 @@ async function openDP(code){
     drawDpChartFallback(cv, r.cur, r.ens);
   }
 }
+/* ── 篩選器單股即時重新估值（Groq AI） ── */
+async function revalDP(code){
+  if(!code) return;
+  const apiKey=($('c-key')||{value:''}).value.trim();
+  if(!apiKey){showToast('❌ 請先在「估值設定」填入 Groq API 金鑰');return;}
+  const btn=$('dp-reval-btn');
+  const badge=$('dp-src-badge');
+  if(btn) btn.disabled=true;
+  if(badge){badge.className='dp-badge-loading';badge.textContent='運算中…';}
+
+  const r=DATA.find(x=>x.code===code);
+  if(!r){if(btn)btn.disabled=false;return;}
+
+  const asAt=r.as_at||$('sc-date').value;
+  const ticker=`${code}.TW`;
+  const xw=0.6, h=20, thr=8;
+
+  /* ── 取得真實收盤行情 ── */
+  let pitPrice=r.cur, closes=null, dates=null;
+  try{
+    const asAtMs=new Date(asAt).getTime();
+    const startDate=new Date(asAtMs-365*24*60*60*1000).toISOString().slice(0,10);
+    const endDate=new Date(asAtMs+30*24*60*60*1000).toISOString().slice(0,10);
+    const result=await fetchPriceData(ticker, startDate, endDate);
+    if(result&&result.data.length>0){
+      const sorted=result.data.slice().sort((a,b)=>a.t-b.t);
+      const pitBar=sorted.filter(p=>p.t<=asAtMs).pop();
+      if(pitBar) pitPrice=pitBar.c;
+      closes=sorted.filter(p=>p.t<=asAtMs).map(p=>p.c);
+      dates=sorted.filter(p=>p.t<=asAtMs).map(p=>new Date(p.t).toISOString().slice(0,10));
+    }
+  }catch(e){/* 降級使用 manifest 現價 */}
+
+  /* ── Groq AI 推論 ── */
+  const sysP=`你是一位台灣股市量化分析師。回傳純 JSON，不加任何說明或 markdown。格式：
+{"ticker":string,"as_at_date":string,"current_price":number,"xgb_target":number,"knn_target":number,"ensemble_target":number,"expected_ret_pct":number,"cv_rmse_avg":number,"fold_rmse":[number,number,number,number,number],"signal":"BUY"|"HOLD"|"SELL","signal_reason":string}
+嚴格規則：
+1. current_price 必須精確等於 ${pitPrice}
+2. ensemble_target = ${xw}×xgb_target + ${(1-xw).toFixed(2)}×knn_target（精確計算）
+3. expected_ret_pct = (ensemble_target/${pitPrice}-1)×100
+4. signal = BUY 若 expected_ret_pct>${thr}，SELL 若 <-${thr}，否則 HOLD
+5. xgb_target 與 knn_target 需基於 ${asAt} 前的技術面特徵合理推算
+6. fold_rmse 每個值介於 0.03-0.15`;
+
+  const userP=`代碼：${ticker}，基準日：${asAt}，現價：${pitPrice} TWD，預測：T+${h}，XGBoost ${Math.round(xw*100)}% KNN ${Math.round((1-xw)*100)}%，信號門檻：±${thr}%`;
+
+  try{
+    const MODELS=['llama-3.3-70b-versatile','llama3-8b-8192'];
+    let resp, lastErr;
+    for(const model of MODELS){
+      resp=await fetch('https://api.groq.com/openai/v1/chat/completions',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${apiKey}`},
+        body:JSON.stringify({model,temperature:0.1,max_tokens:600,response_format:{type:'json_object'},messages:[{role:'system',content:sysP},{role:'user',content:userP}]})
+      });
+      if(resp.status===429){lastErr='限流';continue;}
+      if(!resp.ok){const e=await resp.json().catch(()=>({}));throw new Error(e?.error?.message||`Groq ${resp.status}`);}
+      break;
+    }
+    if(!resp||!resp.ok) throw new Error(lastErr||'Groq API 失敗');
+    const d=await resp.json();
+    const raw=(d.choices?.[0]?.message?.content||'').replace(/```json|```/g,'').trim();
+    if(!raw) throw new Error('Groq 回傳空白');
+    const v=JSON.parse(raw);
+
+    /* ── 更新面板 KPI ── */
+    const ens=v.ensemble_target||r.ens;
+    const xgb=v.xgb_target||r.xgb;
+    const knn=v.knn_target||r.knn;
+    const ret=v.expected_ret_pct??r.ret;
+    const rmse=v.cv_rmse_avg??r.rmse;
+    $('dp-cur').textContent=pitPrice.toLocaleString();
+    $('dp-ens').textContent=ens.toLocaleString();
+    $('dp-ens2').textContent=ens.toLocaleString();
+    $('dp-ret').textContent=`${ret>0?'+':''}${(+ret).toFixed(2)}%`;
+    $('dp-ret').className=`dp-kpi-value ${ret>=0?'green':'red'}`;
+    $('dp-rmse').textContent=rmse?(+rmse).toFixed(4):'—';
+    $('dp-xgb').textContent=xgb.toLocaleString();
+    $('dp-knn').textContent=knn.toLocaleString();
+    const xgbR=((xgb/pitPrice-1)*100);
+    const knnR=((knn/pitPrice-1)*100);
+    $('dp-xgb-ret').textContent=`${xgbR>0?'+':''}${xgbR.toFixed(2)}%`;
+    $('dp-knn-ret').textContent=`${knnR>0?'+':''}${knnR.toFixed(2)}%`;
+    /* 更新訊號說明 */
+    const sig=v.signal||'HOLD';
+    $('dp-meta').textContent=`即時估值 · ${asAt} · 信號：${sig}${v.signal_reason?` · ${v.signal_reason.slice(0,28)}`:''}`;
+
+    /* ── 更新 CV 折疊 RMSE ── */
+    const foldRow=$('dp-fold-row');const foldBox=$('dp-folds');
+    if(foldRow)foldRow.innerHTML='';
+    if(v.fold_rmse&&v.fold_rmse.length&&foldRow&&foldBox){
+      v.fold_rmse.forEach((fv,i)=>{
+        const dd=document.createElement('div');
+        dd.style.cssText='background:var(--dark2);border-radius:4px;padding:3px 7px;font-size:10px;font-family:var(--mono);color:#8a8780;flex:1;text-align:center;min-width:44px';
+        dd.innerHTML=`<div style="font-size:8px;color:#4a4840;margin-bottom:2px">第${i+1}折</div>${(+fv).toFixed(4)}`;
+        foldRow.appendChild(dd);
+      });
+      foldBox.style.display='block';
+    }
+
+    /* ── 重繪走勢圖 ── */
+    const cv=$('dp-canvas');
+    if(closes&&closes.length>5){
+      drawDpChart(cv,closes,dates,ens);
+    }else{
+      drawDpChartFallback(cv,pitPrice,ens);
+    }
+
+    /* ── 更新徽章 ── */
+    if(badge){badge.className='dp-badge-live';badge.textContent='即時 AI';}
+
+  }catch(e){
+    showToast(`❌ 重新估值失敗：${e.message}`);
+    if(badge){badge.className='dp-badge-err';badge.textContent='錯誤';}
+  }finally{
+    if(btn)btn.disabled=false;
+  }
+}
+
 function closeDP(){selRow=null;$('dp-e').style.display='flex';$('dp-c').style.display='none';renderTbl()}
 function handleCSV(e){const f=e.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=ev=>{const l=ev.target.result.split('\n').filter(Boolean);showToast(`CSV 已載入 ${l.length} 個代碼`)};rd.readAsText(f)}
 renderTbl();
